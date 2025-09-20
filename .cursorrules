@@ -1,0 +1,12 @@
+# Rules for the Queue / Worker
+
+- This is a FIFO Queue
+- The queue supports groups (groupId), any worker can run any groupId but only one job per group can be runned at once
+- If orderMs is applied the queue should respect this order and should wait X ms to process job to make sure jobs are in correct order (based on orderMs)
+- Always minimize the risk of blocking & conflicts
+- The api should be as similar to BullMQ as possible (if possible)
+- All features should have tests
+- All tests should always succeed (no failing test)
+- Try run benchmark as well to get a good understanding of performance (50 jobs/s with `--mq groupmq --jobs 500 --workers 4 --job-type cpu --multi-process`)
+- You can always compare with the latest benchmark as well
+- Always follow instructions and do not remove or add any other feature which we haven't talked about!

@@ -1,0 +1,24 @@
+{
+  "name": "example",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsdown index.ts && pnpm copy-lua",
+    "copy-lua": "pnpm dlx copy-folder-util ../dist/lua dist/lua",
+    "start": "node dist/index.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.6.2",
+  "dependencies": {
+    "@bull-board/api": "^6.13.0",
+    "@bull-board/hono": "^6.13.0",
+    "@hono/node-server": "^1.19.4",
+    "groupmq": "file:../",
+    "hono": "^4.9.8",
+    "ioredis": "^5.7.0",
+    "tsdown": "^0.15.4"
+  }
+}
