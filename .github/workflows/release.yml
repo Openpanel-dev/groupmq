@@ -5,14 +5,9 @@ on:
     branches:
       - main
       - next
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'tsconfig.json'
-      - 'vitest.config.ts'
-      - '.releaserc.json'
-      - 'README.md'
+    paths-ignore:
+      - 'example/**'
+      - 'website/**'
 
 permissions:
   contents: write
