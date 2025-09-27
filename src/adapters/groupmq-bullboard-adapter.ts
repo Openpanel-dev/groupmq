@@ -127,9 +127,16 @@ export class BullBoardGroupMQAdapter<T = any> extends BaseAdapter {
     }
   }
 
-  public async clean(_status: any, _graceTimeMs: number): Promise<void> {
+  public async clean(jobStatus: any, graceTimeMs: number): Promise<void> {
     this.assertWritable();
-    throw new Error('Not implemented');
+    // Align with BullMQ adapter: delegate to queue.clean
+    if (
+      jobStatus !== 'completed' &&
+      jobStatus !== 'failed' &&
+      jobStatus !== 'delayed'
+    )
+      return;
+    await this.queue.clean(graceTimeMs, Number.MAX_SAFE_INTEGER, jobStatus);
   }
 
   public async addJob(

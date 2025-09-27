@@ -1380,6 +1380,32 @@ return 1
   }
 
   /**
+   * Clean jobs of a given status older than graceTimeMs
+   * @param graceTimeMs Remove jobs with finishedOn <= now - graceTimeMs (for completed/failed)
+   * @param limit Max number of jobs to clean in one call
+   * @param status Either 'completed' or 'failed'
+   */
+  async clean(
+    graceTimeMs: number,
+    limit: number,
+    status: 'completed' | 'failed' | 'delayed',
+  ): Promise<number> {
+    const graceAt = Date.now() - graceTimeMs;
+    try {
+      const removed = await evalScript<number>(this.r, 'clean-status', [
+        this.ns,
+        status,
+        String(graceAt),
+        String(Math.max(0, limit)),
+      ]);
+      return removed ?? 0;
+    } catch (error) {
+      this.logger.error(`Error cleaning ${status} jobs:`, error);
+      return 0;
+    }
+  }
+
+  /**
    * Update a job's data payload (BullMQ-style)
    */
   async updateData(jobId: string, data: T): Promise<void> {
