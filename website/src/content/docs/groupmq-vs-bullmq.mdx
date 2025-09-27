@@ -1,0 +1,164 @@
+---
+title: GroupMQ vs. BullMQ
+description: How GroupMQ differs from BullMQ and when to choose each.
+---
+
+## Overview
+
+Both GroupMQ and BullMQ are Redis‑backed job queues for Node.js. GroupMQ focuses on per‑group FIFO with a minimal, BullMQ‑inspired API surface; BullMQ provides a broader feature set including single‑process concurrency controls.
+
+## Core differences
+
+- Per‑group FIFO
+  - GroupMQ guarantees at most one active job per `groupId`; different groups run in parallel.
+  - BullMQ provides FIFO per queue (with priorities/flows available when enabled).
+
+- Ordering via `orderMs`
+  - GroupMQ lets producers set `orderMs`; the queue can enforce strict ordering and optionally wait using `orderingDelayMs`.
+
+- Concurrency model
+  - Both libraries scale well. BullMQ exposes an in‑process `concurrency` option; GroupMQ prefers process‑level scaling (child processes, Cluster, PM2, containers). You can also run multiple GroupMQ workers in one process to achieve similar throughput characteristics for I/O‑bound work.
+
+- API shape and compatibility
+  - GroupMQ aligns method names and Job shapes where sensible (e.g., counts, statuses) to ease dashboard integration (e.g., BullBoard adapter included).
+  - Not all BullMQ features are present; GroupMQ keeps a lean surface focused on grouped FIFO and performance.
+
+- Operational focus
+  - GroupMQ emphasizes low Redis load via adaptive blocking, atomic completion, and recovery helpers (promote delayed, recover delayed groups).
+
+## Choosing between them
+
+To be transparent: for most general queueing needs today, BullMQ is a great default choice.
+
+- Choose GroupMQ when you:
+  - Need strict per‑group FIFO (exactly one in‑flight job per `groupId`) without paying for BullMQ Pro
+  - Need correct ordering by producer timestamp via `orderMs` (with optional `orderingDelayMs`)
+
+- Choose BullMQ when you:
+  - Want a broader feature set and in‑process `concurrency` controls
+  - Need advanced features such as flows, priorities, or rate limiting
+  - Are willing to use BullMQ Pro for strict grouping/ordering features
+
+## Scaling
+
+Both libraries scale. BullMQ offers a per‑process `concurrency` setting, while GroupMQ encourages process‑level scaling. You can also create multiple workers in a single Node app when suitable (especially for I/O‑bound tasks).
+
+BullMQ example (in‑process concurrency):
+
+```ts
+// BullMQ (illustrative)
+new Worker('queue', async (job) => { /* ... */ }, { concurrency: 10 });
+```
+
+GroupMQ example (multiple workers in one process):
+
+```ts
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+const queue = new Queue<{ id: string; ms: number }>({ redis, namespace: 'app' });
+
+const workers = Array.from({ length: 4 }, () =>
+  new Worker({ queue, async handler(job) { await new Promise((r) => setTimeout(r, job.data.ms)); } })
+);
+workers.forEach((w) => w.run());
+```
+
+GroupMQ example (process‑level scaling across CPUs):
+
+```ts title="cluster.ts"
+import cluster from 'node:cluster';
+import os from 'node:os';
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+if (cluster.isPrimary) {
+  const n = os.cpus().length;
+  for (let i = 0; i < n; i++) cluster.fork();
+} else {
+  const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+  const queue = new Queue<{ id: string; ms: number }>({ redis, namespace: 'app' });
+  new Worker({ queue, async handler(job) { await new Promise((r) => setTimeout(r, job.data.ms)); } }).run();
+}
+```
+
+## Feature summary
+
+- Per‑group FIFO: Yes (GroupMQ) vs per‑queue (BullMQ)
+- `orderMs` + optional `orderingDelayMs`: GroupMQ
+- Repeats/Cron, Delays, Retries with backoff: Both
+- Single‑process `concurrency` option: BullMQ (GroupMQ prefers processes)
+ - Single‑process `concurrency` option: BullMQ (GroupMQ prefers processes; multiple workers in one app also works)
+- BullBoard integration: Available (GroupMQ adapter)
+
+## Creating queues and workers (side‑by‑side)
+
+BullMQ:
+
+```ts
+import { Queue, Worker } from 'bullmq';
+import Redis from 'ioredis';
+
+const myQueue = new Queue('foo');
+
+async function addJobs() {
+  await myQueue.add('myJobName', { foo: 'bar' });
+  await myQueue.add('myJobName', { qux: 'baz' });
+}
+
+await addJobs();
+
+const connection = new Redis({ maxRetriesPerRequest: null });
+
+const worker = new Worker(
+  'foo',
+  async (job) => {
+    console.log(job.data); // { foo: 'bar' } then { qux: 'baz' }
+  },
+  { connection },
+);
+```
+
+GroupMQ (equivalent):
+
+```ts
+import { Queue, Worker } from 'groupmq';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+
+// Provide a type parameter for full type safety in your worker
+type Payload = { foo?: string; qux?: string };
+
+const queue = new Queue<Payload>({
+  redis,
+  namespace: 'foo',
+});
+
+// Add jobs — use groupId to control per‑group FIFO
+await queue.add({ groupId: 'group-1', data: { foo: 'bar' } });
+await queue.add({ groupId: 'group-2', data: { qux: 'baz' } });
+
+const worker = new Worker({
+  queue, // pass the queue instance (not a name)
+  async handler(job) {
+    console.log(job.data); // typed as Payload
+  },
+});
+
+worker.run();
+```
+
+Notes:
+
+- BullMQ binds workers by queue name and can set in‑process `concurrency`.
+- GroupMQ binds workers to a `Queue` instance. Scale by running multiple workers (in one process or across processes). Per‑group FIFO is enforced via `groupId`.
+
+## Migration notes
+
+- Similar method names: `add`, `getJobCounts`, `getJobsByStatus`, etc.
+- Replace in‑process `concurrency` with multiple processes/replicas.
+- Use `groupId` to model serialized domains (e.g., per user/account/order).
+
+

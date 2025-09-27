@@ -1,0 +1,32 @@
+---
+title: Error handling & retries
+description: Configure attempts, backoff, and dead-letter handling.
+---
+
+```ts
+// Queue-level defaults
+const queue = new Queue({
+  redis,
+  namespace: 'app',
+  maxAttempts: 3,
+});
+
+// Job-level override
+await queue.add({
+  groupId: 'g1',
+  data: { id: '1' },
+  maxAttempts: 5,
+});
+
+// Worker-level cap and custom backoff
+const worker = new Worker({
+  queue,
+  maxAttempts: 5,
+  backoff: (attempt) => Math.min(30000, 2 ** (attempt - 1) * 500),
+  async handler(job) {
+    throw new Error('boom');
+  },
+});
+```
+
+

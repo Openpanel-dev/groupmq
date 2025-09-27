@@ -1,0 +1,56 @@
+---
+title: Configuration Options
+description: Queue, add, and worker options.
+---
+
+## Queue options
+
+```ts
+type QueueOptions = {
+  logger?: Logger | boolean;
+  redis: Redis;
+  namespace: string;
+  jobTimeoutMs?: number;
+  maxAttempts?: number;
+  reserveScanLimit?: number;
+  orderingDelayMs?: number;
+  keepCompleted?: number;
+  keepFailed?: number;
+};
+```
+
+## Add options
+
+```ts
+type AddOptions<T> = {
+  groupId: string;
+  data: T;
+  orderMs?: number;
+  maxAttempts?: number;
+  delay?: number;
+  runAt?: Date | number;
+  repeat?: { every: number } | { pattern: string };
+  jobId?: string; // idempotence
+};
+```
+
+## Worker options
+
+```ts
+type WorkerOptions<T> = {
+  queue: Queue<T>;
+  name?: string;
+  handler: (job: ReservedJob<T>) => Promise<unknown>;
+  heartbeatMs?: number; // default: queue.jobTimeoutMs/3
+  onError?: (err: unknown, job?: ReservedJob<T>) => void;
+  maxAttempts?: number; // default: queue.maxAttemptsDefault
+  backoff?: (attempt: number) => number; // ms
+  enableCleanup?: boolean; // default: true
+  cleanupIntervalMs?: number; // default: 60_000
+  blockingTimeoutSec?: number; // default: 5
+  atomicCompletion?: boolean; // default: true
+  logger?: Logger | true;
+};
+```
+
+

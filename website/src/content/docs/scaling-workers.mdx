@@ -1,0 +1,82 @@
+---
+title: Scaling workers
+description: Run multiple workers safely with per-group FIFO.
+---
+
+GroupMQ ensures only one active job per `groupId` at a time while allowing many groups to process concurrently.
+
+## Why multiple workers in one process doesn't help much
+
+Node.js runs JavaScript on a single thread. Spinning up many `Worker` instances in the same Node process doesn't parallelize CPU-bound work — they'll contend for the same event loop and CPU core. For real throughput improvements, scale across processes/CPUs.
+
+We intentionally do not support BullMQ-style `concurrency` on a single process. We believe process-level scaling provides better isolation, stability, and performance under load.
+
+## Recommended ways to scale
+
+- Spawn multiple processes (child processes)
+- Use Node.js Cluster mode
+- Use PM2 (cluster mode)
+- Run multiple containers/replicas (Kubernetes, Docker Compose, etc.)
+
+Each process should create its own Redis connection, `Queue`, and `Worker`, then call `worker.run()`. Group-level FIFO ordering is preserved across processes.
+
+### 1) Child processes
+
+```ts title="master.ts"
+import { fork } from 'node:child_process';
+
+const instances = 4;
+for (let i = 0; i < instances; i++) {
+  fork('./worker.js');
+}
+```
+
+```ts title="worker.ts"
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+const queue = new Queue<{ id: string; ms: number }>({ redis, namespace: 'app' });
+
+const worker = new Worker({
+  queue,
+  async handler(job) {
+    await new Promise((r) => setTimeout(r, job.data.ms));
+  },
+});
+
+worker.run();
+```
+
+### 2) Node Cluster
+
+```ts title="cluster.ts"
+import cluster from 'node:cluster';
+import os from 'node:os';
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+const instances = process.env.WORKERS ? Number(process.env.WORKERS) : os.cpus().length;
+
+if (cluster.isPrimary) {
+  for (let i = 0; i < instances; i++) cluster.fork();
+} else {
+  const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+  const queue = new Queue<{ id: string; ms: number }>({ redis, namespace: 'app' });
+  new Worker({ queue, async handler(job) { await new Promise((r) => setTimeout(r, job.data.ms)); } }).run();
+}
+```
+
+### 3) PM2 (cluster)
+
+```bash
+pm2 start worker.js -i max
+# or a fixed number
+pm2 start worker.js -i 4
+```
+
+### 4) Containers / Replicas
+
+Run multiple replicas of the same worker image. Each replica is an isolated process with its own `Worker` instance. All connect to the same Redis and cooperate safely.
+
+

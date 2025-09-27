@@ -1,0 +1,51 @@
+---
+title: Quick Example
+description: Minimal producer and worker using GroupMQ.
+---
+
+```ts title="producer.ts"
+import Redis from 'ioredis';
+import { Queue } from 'groupmq';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+
+const queue = new Queue<{ id: string; ms: number }>({
+  redis,
+  namespace: 'quick',
+  keepCompleted: 100,
+  keepFailed: 100,
+});
+
+await queue.add({
+  groupId: 'user:1',
+  data: { id: 'a1', ms: 250 },
+});
+```
+
+```ts title="worker.ts"
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+
+const queue = new Queue<{ id: string; ms: number }>({
+  redis,
+  namespace: 'quick',
+});
+
+const worker = new Worker({
+  queue,
+  async handler(job) {
+    await new Promise((r) => setTimeout(r, job.data.ms));
+    return `done ${job.id}`;
+  },
+});
+
+worker.on('completed', (job) => {
+  console.log('completed', job.id);
+});
+
+worker.run();
+```
+
+

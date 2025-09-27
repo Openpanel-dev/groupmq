@@ -1,0 +1,292 @@
+---
+/* eslint-disable @typescript-eslint/no-unused-vars, no-unused-vars */
+import { getCollection, render } from 'astro:content';
+import { ArrowLeft, ClockFading } from 'lucide-react';
+import DefaultLayout from '@/layouts/DefaultLayout.astro';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('blog');
+  return posts.map((post) => ({
+    params: { slug: post.id },
+    props: post,
+  }));
+}
+
+const post = Astro.props;
+const { Content } = await render(post);
+
+// Calculate reading time
+function calculateReadingTime(content: string, wordsPerMinute = 200): number {
+  const words = content.split(/\s+/).filter(Boolean).length;
+  const minutes = Math.ceil(words / wordsPerMinute);
+  return Math.max(1, minutes);
+}
+
+// Estimate reading time and format date
+const readingTime = calculateReadingTime(post.body || '');
+const formattedDate = new Date(post.data.date).toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+
+// Get authors
+const authors = post.data.authors || [];
+const ogImage = post.data.coverImage || null;
+---
+
+<DefaultLayout title={post.data.title} description={post.data.description} image={ogImage}>
+  <div class="container overflow-hidden">
+    <div class="hidden border border-t-0 p-7.5 md:block"></div>
+
+    <div class="border-x">
+      <div class="bordered-div-padding mx-auto max-w-3xl">
+        <a
+          href="/blog"
+          class="text-secondary hover:text-secondary/90 group inline-flex items-center text-sm font-medium md:text-base"
+        >
+          <ArrowLeft
+            className="mr-2 h-5 w-5 transition-transform group-hover:-translate-x-0.5"
+          />
+          Articles
+        </a>
+        <div class="text-muted-foreground float-right text-sm md:text-base">
+          {formattedDate}
+        </div>
+      </div>
+
+      <article>
+        <!-- Post header -->
+        <div class="border-b">
+          <header
+            class="bordered-div-padding mx-auto max-w-3xl space-y-6 !pt-0 md:space-y-8 lg:space-y-10"
+          >
+            <h1
+              class="font-weight-display text-2xl leading-snug tracking-tighter md:text-3xl lg:text-5xl"
+            >
+              {post.data.title}
+            </h1>
+            <p class="leading-relaxed md:text-lg">{post.data.description}</p>
+
+            <div class="flex items-center justify-between">
+              {
+                authors.length > 0 && (
+                  <div class="flex items-center gap-2">
+                    <div class="flex -space-x-3">
+                      {authors.map(
+                        (author) =>
+                          author.image && (
+                            <img
+                              src={author.image}
+                              alt={author.name}
+                              width={32}
+                              height={32}
+                              class="h-8 w-8 rounded-full border-2 border-white"
+                            />
+                          ),
+                      )}
+                    </div>
+                    <span class="text-muted-foreground text-sm font-medium">
+                      {authors.map((author) => author.name).join(' and ')}
+                    </span>
+                  </div>
+                )
+              }
+              <div
+                class="text-muted-foreground flex items-center text-sm font-medium"
+              >
+                <ClockFading className="mr-2 h-5 w-5" />
+                {readingTime} min{readingTime !== 1 ? 's' : ''} read
+              </div>
+            </div>
+          </header>
+        </div>
+
+        <div class="bordered-div-padding mx-auto max-w-3xl">
+          <!-- Post content with custom MDX styling -->
+          <div
+            class="mdx-content prose prose-lg max-w-none [&>h2:first-of-type]:mt-0"
+          >
+            <Content />
+          </div>
+        </div>
+      </article>
+    </div>
+  </div>
+</DefaultLayout>
+
+<style>
+  /* Custom MDX component styles with bordered-div-padding - scoped to mdx-content */
+  :global(.mdx-content h1) {
+    font-weight: 600;
+    font-size: 2xl;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+  }
+
+  :global(.mdx-content h2) {
+    font-weight: 600;
+    font-size: 1.5rem;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+  }
+
+  :global(.mdx-content h3) {
+    font-weight: 600;
+    font-size: 1.25rem;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+  }
+
+  :global(.mdx-content p) {
+    color: var(--color-foreground);
+    margin: 1.5rem 0;
+    font-size: 1rem;
+    line-height: 1.625;
+  }
+
+  :global(.mdx-content a) {
+    color: var(--color-secondary);
+    font-weight: normal;
+    text-decoration: none;
+  }
+
+  :global(.mdx-content a:hover) {
+    text-decoration: underline;
+  }
+
+  :global(.mdx-content ul) {
+    color: var(--color-foreground);
+    margin: 1.5rem 0;
+    list-style: disc;
+  }
+
+  :global(.mdx-content ul li) {
+    font-size: 1rem;
+    line-height: 1.625;
+    margin: 0.5rem 0;
+  }
+
+  :global(.mdx-content ol) {
+    color: var(--color-foreground);
+    margin: 1.5rem 0;
+    list-style: decimal;
+  }
+
+  :global(.mdx-content ol li) {
+    font-size: 1rem;
+    line-height: 1.625;
+    margin: 0.5rem 0;
+  }
+
+  :global(.mdx-content blockquote) {
+    color: var(--color-muted-foreground);
+    margin: 1.5rem 0;
+    border-left: 2px solid var(--color-border);
+    font-style: italic;
+  }
+
+  :global(.mdx-content pre) {
+    padding: 1.5rem;
+    background-color: var(--color-accent);
+    margin: 2rem 0;
+    overflow: auto;
+    border-radius: 0.5rem;
+    font-family: monospace;
+    font-size: 0.875rem;
+  }
+
+  :global(.mdx-content pre code) {
+    font-size: 0.875rem;
+  }
+
+  :global(.mdx-content img) {
+    margin: 2rem 0;
+    width: 100%;
+    border-radius: 0.5rem;
+    object-fit: cover;
+  }
+
+  :global(.mdx-content table) {
+    margin: 2rem 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+    border: 1px solid var(--color-border);
+    width: 100%;
+    font-size: 0.875rem;
+  }
+
+  :global(.mdx-content thead) {
+    background-color: var(--color-muted);
+    opacity: 0.5;
+  }
+
+  :global(.mdx-content tr) {
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  :global(.mdx-content th) {
+    border: 1px solid var(--color-border);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-weight: 500;
+  }
+
+  :global(.mdx-content td) {
+    border: 1px solid var(--color-border);
+    padding: 0.75rem 1rem;
+  }
+
+  /* Responsive adjustments */
+  @media (min-width: 768px) {
+    :global(.mdx-content h1) {
+      font-size: 1.875rem;
+    }
+
+    :global(.mdx-content h2) {
+      font-size: 1.5rem;
+    }
+
+    :global(.mdx-content h3) {
+      font-size: 1.25rem;
+    }
+
+    :global(.mdx-content p),
+    :global(.mdx-content ul),
+    :global(.mdx-content ol),
+    :global(.mdx-content blockquote),
+    :global(.mdx-content pre),
+    :global(.mdx-content img),
+    :global(.mdx-content table) {
+    }
+  }
+
+  @media (min-width: 1024px) {
+    :global(.mdx-content h1) {
+      font-size: 3rem;
+    }
+
+    :global(.mdx-content h2) {
+      font-size: 2.25rem;
+    }
+
+    :global(.mdx-content h3) {
+      font-size: 1.5rem;
+    }
+
+    :global(.mdx-content p),
+    :global(.mdx-content ul),
+    :global(.mdx-content ol),
+    :global(.mdx-content blockquote),
+    :global(.mdx-content pre),
+    :global(.mdx-content img),
+    :global(.mdx-content table) {
+    }
+  }
+</style>

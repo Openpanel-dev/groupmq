@@ -1,0 +1,122 @@
+---
+import BaseHead from '@/components/BaseHead.astro';
+import Footer from '@/components/layout/footer';
+import Navbar from '@/components/layout/navbar';
+
+const { title, description, currentPage, frontmatter } = Astro.props;
+
+// Format the date if it exists
+const formattedDate = frontmatter?.date
+  ? new Date(frontmatter.date).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    })
+  : null;
+
+// Use frontmatter title if available, otherwise fall back to title prop
+const pageTitle = frontmatter?.title || title;
+---
+
+<html lang="en">
+  <head>
+    <BaseHead title={title} description={description} />
+  </head>
+  <body class="antialiased">
+    <Navbar currentPage={currentPage} client:load />
+    <main>
+      <section class="container">
+        <div class="hidden border-x border-b-0 p-7.5 md:block"></div>
+
+        <div class="mdx-content divide-y border-x">
+          <slot />
+        </div>
+      </section>
+    </main>
+    <Footer client:load />
+    <style>
+      /* Custom MDX component styles - scoped to mdx-content */
+      :global(.mdx-content h1) {
+        padding: 1.5rem;
+        font-weight: 600;
+        font-size: 1.5rem;
+        line-height: 1.25;
+        letter-spacing: -0.025em;
+      }
+
+      :global(.mdx-content h2) {
+        padding: 1.5rem;
+        font-weight: 600;
+        font-size: 1.25rem;
+        line-height: 1.25;
+        letter-spacing: -0.025em;
+      }
+
+      :global(.mdx-content p) {
+        padding: 1.5rem;
+        max-width: 48rem;
+        line-height: 1.625;
+        white-space: pre-wrap;
+      }
+
+      :global(.mdx-content a) {
+        color: var(--color-secondary);
+      }
+
+      :global(.mdx-content a:hover) {
+        text-decoration: underline;
+      }
+
+      :global(.mdx-content ul),
+      :global(.mdx-content ol),
+      :global(.mdx-content blockquote),
+      :global(.mdx-content pre),
+      :global(.mdx-content table) {
+        padding: 1.5rem;
+      }
+
+      /* Responsive adjustments */
+      @media (min-width: 768px) {
+        :global(.mdx-content h1) {
+          padding: 2rem;
+          font-size: 1.875rem;
+        }
+
+        :global(.mdx-content h2) {
+          padding: 2rem;
+          font-size: 1.875rem;
+        }
+
+        :global(.mdx-content p),
+        :global(.mdx-content ul),
+        :global(.mdx-content ol),
+        :global(.mdx-content blockquote),
+        :global(.mdx-content pre),
+        :global(.mdx-content table) {
+          padding: 2rem;
+        }
+      }
+
+      @media (min-width: 1024px) {
+        :global(.mdx-content h1) {
+          padding: 2.5rem;
+          font-size: 3rem;
+        }
+
+        :global(.mdx-content h2) {
+          padding: 2.5rem;
+          font-size: 2.25rem;
+        }
+
+        :global(.mdx-content p),
+        :global(.mdx-content ul),
+        :global(.mdx-content ol),
+        :global(.mdx-content blockquote),
+        :global(.mdx-content pre),
+        :global(.mdx-content table) {
+          padding: 2.5rem;
+        }
+      }
+    </style>
+  </body>
+</html>

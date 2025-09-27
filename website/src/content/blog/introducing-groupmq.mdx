@@ -1,0 +1,84 @@
+---
+title: 'Introducing GroupMQ: Per-Group FIFO for Node + Redis'
+description: 'Why we built GroupMQ, the problems it solves, and how to get started.'
+date: '2025-09-24'
+authors:
+  [{ name: 'Lindesvard', image: '/images/testimonials/lindesvard.jpg' }]
+tags: ['Engineering', 'Open Source', 'Node.js', 'Redis']
+coverImage: '/images/blog/blog-1.webp'
+---
+
+## Why we built GroupMQ
+
+We've used BullMQ for years and have been very happy with it. For one of our latest projects, OpenPanel.dev, we process thousands of events per minute. Events across different users can run in parallel, but there's a critical constraint: within a single user we must process events strictly in timestamp order and only one job per user at a time, because each event contributes to aggregations. The best way to avoid locks and race conditions is to run at most one job per user at any time.
+
+BullMQ's grouping is part of the pro offering. Since OpenPanel is open-source and encourages self-hosting, paying for a closed-source feature wasn't an option. So we built a dedicated, open-source grouping queue with a familiar API and a tight feature set focused on this exact need.
+
+## What GroupMQ gives you
+
+- **Per-group FIFO**: Exactly one in-flight job per `groupId`; no overtaking within the group.
+- **Timestamp ordering**: Respect `orderMs` and optionally `orderingDelayMs` for stricter ordering when producers are slightly out of sync.
+- **Retries and backoff**: Queue-level, job-level, and worker-level attempts with exponential backoff and dead-lettering when exhausted.
+- **Delays and scheduling**: `delay`, `runAt`, `changeDelay(id, ms)` to reschedule.
+- **Cron and repeats**: `repeat.every` or `repeat.pattern` (cron) with a lightweight scheduler.
+- **Idempotence**: Provide a stable `jobId` to deduplicate safely; retain compact metadata for inspection.
+- **Pause/resume and graceful shutdown**: Stop safely without dropping in-flight work; emit a `graceful-timeout` if needed.
+- **BullMQ-style shapes**: Familiar method and `Job` shapes; works with our BullBoard adapter.
+
+## Quick start
+
+```ts
+import Redis from 'ioredis';
+import { Queue, Worker } from 'groupmq';
+
+const redis = new Redis('redis://127.0.0.1:6379');
+
+type Payload = { type: 'charge' | 'refund'; amount: number };
+
+const queue = new Queue<Payload>({
+  redis,
+  namespace: 'orders',
+  jobTimeoutMs: 30_000,
+});
+
+await queue.add({
+  groupId: 'user:42',
+  data: { type: 'charge', amount: 999 },
+  orderMs: Date.now(),
+  maxAttempts: 5,
+});
+
+const worker = new Worker({
+  queue,
+  async handler(job) {
+    // job.data is fully typed
+    if (job.data.type === 'charge') {
+      // charge...
+    }
+  },
+});
+
+worker.run();
+```
+
+## Cron, delays, and unions (the pragmatic bits)
+
+- Repeating jobs: `repeat.every` or `repeat.pattern` (cron). For timely schedules, set `cleanupIntervalMs` to be \<= your smallest repeat interval.
+- Delayed jobs: use `delay` or `runAt`. You can reschedule with `job.changeDelay()` or `queue.changeDelay(id, ms)`.
+- Multiple job kinds in one queue: use discriminated unions (`type`/`payload`) for type-safe handlers.
+
+## What it's not (yet)
+
+GroupMQ focuses on grouped FIFO and timestamp ordering with a lean API. If you need features far beyond this scope today, BullMQ is a solid choice. We keep adding pragmatic features as they prove useful for grouped workloads.
+
+## Roadmap highlights
+
+- More metrics and observability
+- Lua hardening and further performance work
+- A native API to update job data safely
+
+## Try it
+
+Check out the docs on the site for installation, job types, processing, and an in-depth comparison with BullMQ. There's also a benchmark folder if you want to validate throughput on your hardware.
+
+We built GroupMQ to be the simple, reliable tool we wanted for per‑group FIFO. If that’s your problem too, we hope it saves you time.

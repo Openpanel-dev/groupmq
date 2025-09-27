@@ -1,0 +1,19 @@
+---
+import { Features } from '@/components/sections/features';
+import { GroupMQBullboard } from '@/components/sections/groupmq-bullboard';
+import { GroupMQHero } from '@/components/sections/groupmq-hero';
+import { GroupMQIframe } from '@/components/sections/groupmq-iframe';
+import { GroupMQUsedBy } from '@/components/sections/groupmq-usedby';
+import { Testimonials } from '@/components/sections/testimonials';
+import DefaultLayout from '@/layouts/DefaultLayout.astro';
+import { SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+---
+
+<DefaultLayout title={SITE_TITLE} description={SITE_DESCRIPTION}>
+  <GroupMQHero client:load />
+  <Features client:visible />
+  <GroupMQBullboard client:visible />
+  <GroupMQUsedBy client:visible />
+  <GroupMQIframe client:visible />
+  <Testimonials client:visible />
+</DefaultLayout>

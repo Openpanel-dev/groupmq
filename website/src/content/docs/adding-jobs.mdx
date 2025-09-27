@@ -1,0 +1,42 @@
+---
+title: Adding Jobs
+description: Enqueue jobs with groupId, delays, and repeat options.
+---
+
+```ts
+// Basic add
+await queue.add({
+  groupId: 'user:1',
+  data: { id: '1', ms: 200 },
+});
+
+// Delay by 2 seconds
+await queue.add({
+  groupId: 'user:1',
+  data: { id: '2', ms: 200 },
+  delay: 2000,
+});
+
+// Schedule at a specific time
+await queue.add({
+  groupId: 'user:2',
+  data: { id: '3', ms: 200 },
+  runAt: Date.now() + 5000,
+});
+
+// Repeat every 5 seconds
+await queue.add({
+  groupId: 'user:cron',
+  data: { id: 'tick', ms: 100 },
+  repeat: { every: 5000 },
+});
+
+// Repeat using cron
+await queue.add({
+  groupId: 'user:cron',
+  data: { id: 'nightly', ms: 100 },
+  repeat: { pattern: '0 0 * * *' },
+});
+```
+
+

@@ -1,0 +1,12 @@
+---
+title: Performance tips
+description: Practical guidance for high throughput setups.
+---
+
+- Prefer `reserveBlocking()` via `Worker` over custom polling
+- Keep `jobTimeoutMs` realistic; heartbeats are proportional
+- Use `orderingDelayMs` only when strict ordering is required
+- Monitor `getJobCounts()` and group cardinality
+- Run Redis locally or in the same AZ to reduce latency
+
+

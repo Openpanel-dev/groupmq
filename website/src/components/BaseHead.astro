@@ -1,0 +1,94 @@
+---
+// Import the global.css file here so that it is included on
+// all pages through the use of the <BaseHead /> component.
+import '@/styles/global.css';
+import { SITE_METADATA, SITE_TITLE } from '../consts';
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+
+const { title, description, image } = Astro.props;
+const finalTitle = title || SITE_METADATA.title.default;
+const finalDescription = description || SITE_METADATA.description;
+const finalImage = image || SITE_METADATA.openGraph.images[0].url;
+const imageURL = new URL(finalImage, Astro.url);
+---
+
+<!-- Global Metadata -->
+<meta charset="utf-8" />
+
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta
+  name="robots"
+  content={`${SITE_METADATA.robots.index ? 'index' : 'noindex'}, ${SITE_METADATA.robots.follow ? 'follow' : 'nofollow'}`}
+/>
+<meta name="keywords" content={SITE_METADATA.keywords.join(', ')} />
+<meta name="author" content={SITE_METADATA.authors[0].name} />
+<meta name="creator" content={SITE_METADATA.creator} />
+<meta name="publisher" content={SITE_METADATA.publisher} />
+
+<!-- Theme Script -->
+<script is:inline>
+  const savedTheme = localStorage.getItem('starlight-theme');
+  const initialTheme = savedTheme || 'light';
+  document.documentElement.classList.toggle('dark', initialTheme === 'dark');
+</script>
+
+<!-- Favicon -->
+
+{
+  SITE_METADATA.icons.icon.map((icon) => (
+    <link rel="icon" type={icon.type} sizes={icon.sizes} href={icon.url} />
+  ))
+}
+{
+  SITE_METADATA.icons.apple.map((icon) => (
+    <link rel="apple-touch-icon" sizes={icon.sizes} href={icon.url} />
+  ))
+}
+{
+  SITE_METADATA.icons.shortcut.map((icon) => (
+    <link rel="shortcut icon" href={icon.url} />
+  ))
+}
+
+<link rel="sitemap" href="/sitemap-index.xml" />
+<link
+  rel="alternate"
+  type="application/rss+xml"
+  title={SITE_TITLE}
+  href={new URL('rss.xml', Astro.site)}
+/>
+<meta name="generator" content={Astro.generator} />
+
+<!-- Canonical URL -->
+<link rel="canonical" href={canonicalURL} />
+
+<!-- Primary Meta Tags -->
+<title>{finalTitle}</title>
+<meta name="title" content={finalTitle} />
+<meta name="description" content={finalDescription} />
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content="website" />
+<meta property="og:url" content={Astro.url} />
+<meta property="og:site_name" content={SITE_METADATA.openGraph.siteName} />
+<meta property="og:title" content={finalTitle} />
+<meta property="og:description" content={finalDescription} />
+<meta property="og:image" content={imageURL} />
+<meta
+  property="og:image:width"
+  content={SITE_METADATA.openGraph.images[0].width.toString()}
+/>
+<meta
+  property="og:image:height"
+  content={SITE_METADATA.openGraph.images[0].height.toString()}
+/>
+<meta property="og:image:alt" content={SITE_METADATA.openGraph.images[0].alt} />
+
+<!-- Twitter -->
+<meta property="twitter:card" content={SITE_METADATA.twitter.card} />
+<meta property="twitter:url" content={Astro.url} />
+<meta property="twitter:title" content={finalTitle} />
+<meta property="twitter:description" content={finalDescription} />
+<meta property="twitter:image" content={imageURL} />
+<meta property="twitter:creator" content={SITE_METADATA.twitter.creator} />

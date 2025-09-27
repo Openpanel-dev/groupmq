@@ -1,0 +1,22 @@
+---
+title: What is GroupMQ?
+description: A per-group FIFO queue for Node.js + Redis with BullMQ-like ergonomics.
+---
+
+GroupMQ is a fast, lightweight job queue for Node.js backed by Redis that guarantees per-group FIFO processing. Any worker can process any `groupId`, but only one job per group runs at a time.
+
+### Why use it?
+
+- Per-group FIFO ordering without global bottlenecks
+- Minimal, BullMQ-inspired API
+- Scales horizontally across workers
+- Built-in retries, delays, and repeating jobs (cron)
+- Designed for performance and low Redis load
+
+### Core ideas
+
+- A Queue stores jobs partitioned by `groupId`
+- Workers reserve jobs while ensuring at-most-one active job per group
+- Ordering is preserved using `orderMs` and optional `orderingDelayMs`
+
+

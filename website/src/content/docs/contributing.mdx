@@ -1,0 +1,20 @@
+---
+title: Contributing
+description: How to contribute to GroupMQ.
+---
+
+## Developing
+
+```bash
+pnpm i
+pnpm test
+pnpm bench -- --mq groupmq --jobs 500 --workers 4 --job-type cpu --multi-process
+```
+
+## Guidelines
+
+- Add tests for features and bug fixes
+- Keep API similar to BullMQ where sensible
+- Ensure benchmarks and tests pass before PR
+
+

@@ -1,0 +1,123 @@
+---
+title: Job Types & Scheduling
+description: Regular jobs with discriminated unions, delayed jobs, and cron/repeat jobs.
+---
+
+## Regular jobs (discriminated unions)
+
+Model multiple job kinds in one queue using a discriminated union (like Redux style `type`/`payload`). This keeps handlers type‑safe and easy to extend.
+
+```ts
+type EmailJob = { type: 'send-email'; payload: { to: string; subject: string } };
+type ReindexJob = { type: 'reindex'; payload: { index: string } };
+type JobPayload = EmailJob | ReindexJob;
+
+const queue = new Queue<JobPayload>({ redis, namespace: 'app' });
+
+await queue.add({ groupId: 'user:1', data: { type: 'send-email', payload: { to: 'a@b.com', subject: 'Hi' } } });
+await queue.add({ groupId: 'tenant:42', data: { type: 'reindex', payload: { index: 'products' } } });
+
+new Worker({
+  queue,
+  async handler(job) {
+    switch (job.data.type) {
+      case 'send-email':
+        return await sendEmail(job.data.payload);
+      case 'reindex':
+        return await reindex(job.data.payload.index);
+    }
+  },
+}).run();
+```
+
+Tip: Use `groupId` to serialize domains that must not overlap (per user/account/order), while letting other groups process in parallel.
+
+## Delayed jobs
+
+Delay execution using `delay` or schedule with an absolute time via `runAt`.
+
+```ts
+// Delay by 2 seconds
+await queue.add({ groupId: 'user:1', data: { type: 'send-email', payload: { to: 'a@b.com', subject: 'Hi' } }, delay: 2000 });
+
+// Run at a specific timestamp
+await queue.add({ groupId: 'user:2', data: { type: 'reindex', payload: { index: 'products' } }, runAt: Date.now() + 5_000 });
+```
+
+Behavior:
+
+- Delayed jobs become eligible when their time is reached and are then scheduled respecting per‑group FIFO and `orderMs` (if provided).
+- Workers handle promotion automatically; no separate polling code is needed.
+
+### Change a delayed job’s time
+
+You can modify when a delayed job will run.
+
+```ts
+const job = await queue.add({ groupId: 'user:1', data: { type: 'send-email', payload: { to: 'a@b.com', subject: 'Hi' } }, delay: 60_000 });
+
+// Bring it forward to run ASAP (0 means no delay)
+await job.changeDelay(0);
+
+// Or push it back by 30 seconds
+await job.changeDelay(30_000);
+```
+
+Alternatively, if you only have the job ID:
+
+```ts
+await queue.changeDelay('job-id-here', 30_000);
+```
+
+## Cron / repeating jobs
+
+Create repeating jobs with a fixed interval or a cron pattern.
+
+```ts
+// Every 5 seconds
+await queue.add({ groupId: 'cron', data: { type: 'reindex', payload: { index: 'products' } }, repeat: { every: 5000 } });
+
+// Cron pattern (every day at midnight)
+await queue.add({ groupId: 'cron', data: { type: 'send-email', payload: { to: 'ops@x.com', subject: 'Daily report' } }, repeat: { pattern: '0 0 * * *' } });
+```
+
+Scheduling accuracy depends on the worker’s maintenance cycle. The worker periodically runs a cleanup cycle that also materializes repeats and promotes delayed jobs.
+
+- Default: `cleanupIntervalMs = 60_000` (60s)
+- If you need sub‑minute schedules (e.g., `every: 5000`), set a smaller `cleanupIntervalMs` on your worker:
+
+```ts
+new Worker({
+  queue,
+  cleanupIntervalMs: 1000, // run cleanup/scheduler every 1s
+  async handler(job) { /* ... */ },
+}).run();
+```
+
+Remove a repeating job:
+
+```ts
+await queue.removeRepeatingJob('cron', { every: 5000 });
+// or
+await queue.removeRepeatingJob('cron', { pattern: '0 0 * * *' });
+```
+
+Notes:
+
+- Repeats are materialized by the worker loop; ensure at least one worker is running.
+- For very small intervals, align cleanupIntervalMs to be less than or equal to the smallest repeat interval for on-time triggers.
+- The original `orderMs` is preserved for jobs created from a repeat definition.
+
+## Updating job data (current status)
+
+Updating an existing job’s data payload is not currently supported.
+
+Recommended patterns:
+
+- Store canonical data in your database and place lightweight references (IDs) in the job payload.
+- For changes to timing, use `changeDelay`. For content changes, enqueue a new job.
+- If you rely on `jobId` for idempotence, remember re‑adding with the same `jobId` will de‑duplicate; use a new `jobId` for a new version.
+
+Planned: native job data update API.
+
+

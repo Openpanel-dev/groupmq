@@ -1,0 +1,15 @@
+---
+/* eslint-disable @typescript-eslint/no-unused-vars, no-unused-vars */
+import { getCollection } from 'astro:content';
+import BlogPosts from '@/components/sections/blog-posts';
+import DefaultLayout from '@/layouts/DefaultLayout.astro';
+import { transformBlogPost } from '@/lib/blog';
+
+const posts = (await getCollection('blog'))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
+  .map(transformBlogPost);
+---
+
+<DefaultLayout title="Articles" description="Latest articles from GroupMQ">
+  <BlogPosts blogPosts={posts} client:load />
+</DefaultLayout>

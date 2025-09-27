@@ -1,0 +1,30 @@
+---
+title: API — Worker
+description: Worker options, events, and behavior.
+---
+
+## Constructor
+
+```ts
+new Worker({ queue, handler, heartbeatMs?, maxAttempts?, backoff?, ... })
+```
+
+## Events
+
+- `ready`
+- `completed` — `(job)`
+- `failed` — `(job)`
+- `error` — `(error)`
+- `closed`
+- `ioredis:close`
+- `graceful-timeout` — `(job)`
+
+## Methods
+
+- `run()` — start processing
+- `close(gracefulTimeoutMs?)` — stop and wait for current job
+- `getCurrentJob()`
+- `isProcessing()`
+- `getWorkerMetrics()`
+
+

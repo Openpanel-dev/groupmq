@@ -1,0 +1,22 @@
+---
+/* eslint-disable @typescript-eslint/no-unused-vars, no-unused-vars */
+import BaseHead from '@/components/BaseHead.astro';
+import Footer from '@/components/layout/footer';
+import Navbar from '@/components/layout/navbar';
+
+// Removed Banner (template ad) as part of cleanup
+
+const { title, description, image } = Astro.props;
+const currentPath = Astro.url.pathname;
+---
+
+<html lang="en">
+  <head>
+    <BaseHead title={title} description={description} image={image} />
+  </head>
+  <body class={`min-h-screen antialiased flex flex-col`}>
+    <Navbar currentPage={currentPath} client:load />
+    <main class="flex-1"><slot /></main>
+    <Footer client:load />
+  </body>
+</html>

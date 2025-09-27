@@ -1,0 +1,57 @@
+---
+title: Creating a Queue
+description: Create a queue with Redis and namespace.
+---
+
+```ts
+import Redis from 'ioredis';
+import { Queue } from 'groupmq';
+
+const redis = new Redis('redis://localhost:6379', { maxRetriesPerRequest: null });
+
+const queue = new Queue<{ id: string; ms: number }>({
+  redis,
+  namespace: 'orders',
+});
+```
+
+## TypeScript typing
+
+When using TypeScript, provide a type parameter to `Queue` so your worker handler is fully type-safe. The type is automatically inferred by the `Worker` when you pass the queue in.
+
+```ts
+type OrderPayload = { id: string; ms: number };
+
+const queue = new Queue<OrderPayload>({
+  redis,
+  namespace: 'orders',
+});
+
+// Inferred types inside handler: job.data is OrderPayload
+new Worker({
+  queue,
+  async handler(job) {
+    job.data.id; // string
+    job.data.ms; // number
+  },
+}).run();
+```
+
+## Options
+
+Only `redis` and `namespace` are required. Everything else is optional.
+
+- **redis (required)**: An `ioredis` client instance used by the queue.
+- **namespace (required)**: A string used to namespace all Redis keys for this queue.
+
+Optional:
+
+- **logger**: `Logger | boolean`. Pass `true` to enable basic logs, or a custom logger.
+- **jobTimeoutMs**: Visibility timeout for a reserved job before it’s considered stalled. Default: 30000 ms.
+- **maxAttempts**: Default max retry attempts for jobs (can be overridden per job). Default: 3.
+- **reserveScanLimit**: How many groups/jobs to scan when reserving. Default: 20.
+- **orderingDelayMs**: Global extra delay to help preserve strict ordering by `orderMs`. Default: 0.
+- **keepCompleted**: How many completed jobs to retain for inspection. Default: 0.
+- **keepFailed**: How many failed jobs to retain for inspection. Default: 0.
+
+
