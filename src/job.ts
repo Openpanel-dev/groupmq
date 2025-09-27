@@ -94,9 +94,13 @@ export class Job<T = any> {
     // return this.queue.retry(this.id, state);
   }
 
-  update?(jobData: Record<string, any>): Promise<void>;
+  async updateData(jobData: T): Promise<void> {
+    await this.queue.updateData(this.id, jobData);
+  }
 
-  updateData?(jobData: Record<string, any>): Promise<void>;
+  async update(jobData: T): Promise<void> {
+    await this.updateData(jobData);
+  }
 
   static fromReserved<T = any>(
     queue: Queue<T>,

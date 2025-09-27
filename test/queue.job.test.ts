@@ -96,6 +96,60 @@ describe('Job Tests', () => {
     await redis.quit();
   });
 
+  it('should update job data via queue and via job instance', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue<{ n: number }>({
+      redis,
+      namespace: `${namespace}:update`,
+      keepCompleted: 1,
+    });
+
+    const job = await q.add({ groupId: 'g1', data: { n: 1 } });
+
+    // Update via queue
+    await q.updateData(job.id, { n: 2 });
+    const j1 = await q.getJob(job.id);
+    expect(j1.data).toEqual({ n: 2 });
+
+    // Update via job instance
+    await j1.updateData({ n: 3 });
+    const j2 = await q.getJob(job.id);
+    expect(j2.data).toEqual({ n: 3 });
+
+    await redis.quit();
+  });
+
+  it('should process updated job data in the worker', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue<{ n: number }>({
+      redis,
+      namespace: `${namespace}:update-worker`,
+      keepCompleted: 1,
+    });
+
+    const job = await q.add({ groupId: 'g1', data: { n: 1 } });
+
+    // Update before a worker reserves it so the reserved payload reflects the change
+    await q.updateData(job.id, { n: 99 });
+
+    let seen: { n: number } | null = null;
+    const worker = new Worker<{ n: number }>({
+      queue: q,
+      handler: async (reserved) => {
+        seen = reserved.data;
+        return 'ok';
+      },
+    });
+    worker.run();
+
+    await q.waitForEmpty(2000);
+
+    expect(seen).toEqual({ n: 99 });
+
+    await worker.close();
+    await redis.quit();
+  });
+
   it('should give the error for a failed job', async () => {
     const redis = new Redis(REDIS_URL);
     const q = new Queue({

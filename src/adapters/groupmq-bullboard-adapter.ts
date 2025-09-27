@@ -6,6 +6,7 @@ import type {
   Status as BullBoardStatus,
   QueueType,
 } from '@bull-board/api/typings/app';
+import type { Job } from '../job';
 import type { Queue } from '../queue';
 
 export type GroupMQBullBoardAdapterOptions = {
@@ -60,9 +61,14 @@ export class BullBoardGroupMQAdapter<T = any> extends BaseAdapter {
     jobStatuses: BullBoardJobStatus[],
     start?: number,
     end?: number,
-  ) {
-    const jobs = await this.queue.getJobsByStatus(jobStatuses, start, end);
-    return jobs;
+  ): Promise<BullBoardQueueJob[]> {
+    const jobs = await this.queue.getJobsByStatus(
+      jobStatuses as any,
+      start,
+      end,
+    );
+    // QueueJob's update and updateData methods mismatch Record<string, any> vs T
+    return jobs as Omit<Job<T>, 'update' | 'updateData'>[];
   }
 
   public async getJobCounts(): Promise<BullBoardJobCounts> {
@@ -126,13 +132,19 @@ export class BullBoardGroupMQAdapter<T = any> extends BaseAdapter {
     throw new Error('Not implemented');
   }
 
-  public async addJob(_name: string, data: any, options: any) {
+  public async addJob(
+    _name: string,
+    data: any,
+    options: any,
+  ): Promise<BullBoardQueueJob> {
     this.assertWritable();
-    return this.queue.add({
+    const job = await this.queue.add({
       groupId: options.groupId ?? Math.random().toString(36).substring(2, 15),
       data: data,
       ...options,
     });
+    // QueueJob's update and updateData methods mismatch Record<string, any> vs T
+    return job as Omit<Job<T>, 'update' | 'updateData'>;
   }
 
   public async isPaused(): Promise<boolean> {

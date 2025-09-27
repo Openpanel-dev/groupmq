@@ -1357,6 +1357,19 @@ return 1
   }
 
   /**
+   * Update a job's data payload (BullMQ-style)
+   */
+  async updateData(jobId: string, data: T): Promise<void> {
+    const jobKey = `${this.ns}:job:${jobId}`;
+    const exists = await this.r.exists(jobKey);
+    if (!exists) {
+      throw new Error(`Job ${jobId} not found`);
+    }
+    const serialized = JSON.stringify(data === undefined ? null : data);
+    await this.r.hset(jobKey, 'data', serialized);
+  }
+
+  /**
    * Add a repeating job (cron job)
    */
   private async addRepeatingJob(opts: AddOptions<T>): Promise<JobEntity> {
