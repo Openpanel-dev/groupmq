@@ -1357,6 +1357,29 @@ return 1
   }
 
   /**
+   * Promote a delayed job to be ready immediately
+   */
+  async promote(jobId: string): Promise<boolean> {
+    return this.changeDelay(jobId, 0);
+  }
+
+  /**
+   * Remove a job from the queue regardless of state (waiting, delayed, processing)
+   */
+  async remove(jobId: string): Promise<boolean> {
+    try {
+      const result = await evalScript<number>(this.r, 'remove', [
+        this.ns,
+        jobId,
+      ]);
+      return result === 1;
+    } catch (error) {
+      this.logger.error(`Error removing job ${jobId}:`, error);
+      return false;
+    }
+  }
+
+  /**
    * Update a job's data payload (BullMQ-style)
    */
   async updateData(jobId: string, data: T): Promise<void> {

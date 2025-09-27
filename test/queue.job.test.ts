@@ -150,6 +150,66 @@ describe('Job Tests', () => {
     await redis.quit();
   });
 
+  it('should promote a delayed job and process it immediately', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue<{ n: number }>({
+      redis,
+      namespace: `${namespace}:promote`,
+    });
+
+    const job = await q.add({ groupId: 'g1', data: { n: 1 }, delay: 60_000 });
+
+    let seen: { n: number } | null = null;
+    const worker = new Worker<{ n: number }>({
+      queue: q,
+      handler: async (reserved) => {
+        seen = reserved.data;
+        return 'ok';
+      },
+    });
+    worker.run();
+
+    // Promote to run now
+    await q.promote(job.id);
+    await q.waitForEmpty(2000);
+
+    expect(seen).toEqual({ n: 1 });
+
+    await worker.close();
+    await redis.quit();
+  });
+
+  it('should remove a waiting job and not process it', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue<{ n: number }>({
+      redis,
+      namespace: `${namespace}:remove`,
+    });
+
+    const job = await q.add({ groupId: 'g1', data: { n: 1 } });
+
+    let processed = false;
+    const worker = new Worker<{ n: number }>({
+      queue: q,
+      handler: async () => {
+        processed = true;
+        return 'ok';
+      },
+    });
+    worker.run();
+
+    // Remove the job before it gets picked up
+    const removed = await q.remove(job.id);
+    expect(removed).toBe(true);
+
+    // Wait a bit and ensure nothing processed
+    await q.waitForEmpty(500); // queue should be empty since we removed
+    expect(processed).toBe(false);
+
+    await worker.close();
+    await redis.quit();
+  });
+
   it('should give the error for a failed job', async () => {
     const redis = new Redis(REDIS_URL);
     const q = new Queue({

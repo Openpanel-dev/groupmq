@@ -23,7 +23,8 @@ export type ScriptName =
   | 'get-unique-groups'
   | 'get-unique-groups-count'
   | 'recover-delayed-groups'
-  | 'cleanup-poisoned-group';
+  | 'cleanup-poisoned-group'
+  | 'remove';
 
 const cacheByClient = new WeakMap<Redis, Map<ScriptName, string>>();
 

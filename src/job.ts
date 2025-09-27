@@ -83,15 +83,15 @@ export class Job<T = any> {
   }
 
   async promote(): Promise<void> {
-    // return this.queue.promote(this.id);
+    await this.queue.promote(this.id);
   }
 
   async remove(): Promise<void> {
-    // return this.queue.remove(this.id);
+    await this.queue.remove(this.id);
   }
 
   async retry(_state?: Extract<Status, 'completed' | 'failed'>): Promise<void> {
-    // return this.queue.retry(this.id, state);
+    await this.queue.retry(this.id);
   }
 
   async updateData(jobData: T): Promise<void> {
