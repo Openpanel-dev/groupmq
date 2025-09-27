@@ -1,0 +1,105 @@
+---
+title: API — Job
+description: Job helper methods and the job shape.
+---
+
+## Job
+
+Job entities are returned from `queue.add(...)`, `queue.getJob(id)`, and from worker events. They mirror BullMQ's `Job` shape and expose helpers that delegate to the `Queue`.
+
+### Setup
+
+```ts
+import Redis from 'ioredis'
+import { Queue } from 'groupmq'
+
+const redis = new Redis()
+const queue = new Queue<{ n: number }>({ redis, namespace: 'docs' })
+const job = await queue.add({ groupId: 'g1', data: { n: 1 } })
+```
+
+### updateData(data) / update(data)
+
+Replace the job payload in Redis.
+
+```ts
+await job.update({ n: 2 })
+// or
+await job.updateData({ n: 2 })
+```
+
+### promote()
+
+Promote this job if delayed so it runs immediately.
+
+```ts
+await job.promote()
+```
+
+### remove()
+
+Remove this job regardless of state (waiting, delayed, processing).
+
+```ts
+await job.remove()
+```
+
+### retry()
+
+Retry this job using queue defaults and backoff.
+
+```ts
+await job.retry()
+```
+
+### getState()
+
+Get the current status inferred from Redis.
+
+```ts
+const state = await job.getState()
+```
+
+### Shape
+
+```ts
+type ReservedJob<T = any> = {
+  id: string;
+  groupId: string;
+  data: T;
+  attempts: number;
+  maxAttempts: number;
+  seq: number;
+  timestamp: number;
+  orderMs: number;
+  score: number;
+  deadlineAt: number;
+};
+```
+
+```ts
+// Runtime `Job` entity (subset shown)
+class Job<T> {
+  id: string
+  data: T
+  groupId: string
+  attemptsMade: number
+  opts: { attempts: number; delay?: number }
+  processedOn?: number
+  finishedOn?: number
+  failedReason?: string
+  stacktrace?: string
+  returnvalue?: any
+  timestamp: number
+  orderMs?: number
+  status: 'active' | 'waiting' | 'completed' | 'failed' | 'delayed' | 'paused' | 'unknown'
+
+  updateData(data: T): Promise<void>
+  update(data: T): Promise<void>
+  promote(): Promise<void>
+  remove(): Promise<void>
+  retry(): Promise<void>
+  getState(): Promise<'active' | 'waiting' | 'completed' | 'failed' | 'delayed' | 'paused' | 'unknown'>
+}
+```
+

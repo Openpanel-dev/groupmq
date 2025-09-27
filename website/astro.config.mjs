@@ -71,7 +71,8 @@ export default defineConfig({
         {
           label: 'API Reference',
           items: [
-            { label: 'Queue & Job', slug: 'api-queue-job' },
+            { label: 'Queue', slug: 'api-queue' },
+            { label: 'Job', slug: 'api-job' },
             { label: 'Worker', slug: 'api-worker' },
           ],
         },

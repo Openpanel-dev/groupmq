@@ -1,0 +1,292 @@
+---
+title: API — Queue
+description: Queue methods and examples.
+---
+
+## Queue
+
+GroupMQ exposes a BullMQ-like Queue API with group-aware FIFO semantics and optional ordering delay. Below are all public methods with a brief explanation and a practical example for each.
+
+### Setup
+
+```ts
+import Redis from 'ioredis'
+import { Queue } from 'groupmq'
+
+const redis = new Redis()
+const queue = new Queue<{ foo: string }>({
+  redis,
+  namespace: 'demo',
+  jobTimeoutMs: 30_000,
+  maxAttempts: 3,
+  orderingDelayMs: 0,
+})
+```
+
+### add(opts)
+
+Add a job to a group. If `repeat` is provided, registers a repeating job definition.
+
+```ts
+// One-off job
+await queue.add({ groupId: 'user:1', data: { foo: 'bar' } })
+
+// Delayed job (run after 5s)
+await queue.add({ groupId: 'user:1', data: { foo: 'baz' }, delay: 5000 })
+
+// Cron job (every minute)
+await queue.add({
+  groupId: 'reports',
+  data: { type: 'daily' },
+  repeat: { pattern: '* * * * *' },
+})
+```
+
+### reserve()
+
+Reserve the next available job immediately (non-blocking). Returns `null` if none.
+
+```ts
+const job = await queue.reserve()
+if (job) {
+  // process
+}
+```
+
+### reserveBlocking(timeoutSec?, blockUntil?)
+
+Block for up to `timeoutSec` seconds waiting for the next available job, adapting timeouts to activity and delayed jobs.
+
+```ts
+// Wait up to 5s for a job
+const job = await queue.reserveBlocking(5)
+if (job) {
+  // process
+}
+```
+
+### complete({ id, groupId })
+
+Mark a reserved job as completed.
+
+```ts
+await queue.complete({ id: job.id, groupId: job.groupId })
+```
+
+### completeAndReserveNext(completedJobId, groupId)
+
+Atomically complete the current job and try to reserve the next job in the same group to minimize overtaking by other workers.
+
+```ts
+const next = await queue.completeAndReserveNext(job.id, job.groupId)
+if (next) {
+  // process next from same group
+}
+```
+
+### retry(jobId, backoffMs?)
+
+Requeue a job with optional backoff (ms). Returns -1 if queue-level max attempts reached.
+
+```ts
+await queue.retry(job.id, 2000)
+```
+
+### updateData(jobId, data)
+
+Replace the job payload in Redis.
+
+```ts
+await queue.updateData(job.id, { foo: 'updated' })
+```
+
+### changeDelay(jobId, newDelay)
+
+Change or clear a job's delay. Use `promote` to force immediate execution.
+
+```ts
+await queue.changeDelay(job.id, 10_000) // push 10s into the future
+await queue.promote(job.id) // or promote immediately
+```
+
+### promote(jobId)
+
+Promote a delayed job to run now.
+
+```ts
+await queue.promote(job.id)
+```
+
+### remove(jobId)
+
+Remove a job regardless of state (waiting, delayed, or processing).
+
+```ts
+await queue.remove(job.id)
+```
+
+### clean(graceTimeMs, limit, status)
+
+Remove finished jobs of a status older than `graceTimeMs`. Status is one of `'completed' | 'failed' | 'delayed'`.
+
+```ts
+// Remove completed older than 1h
+await queue.clean(60 * 60 * 1000, Number.MAX_SAFE_INTEGER, 'completed')
+
+// Remove failed older than 1h
+await queue.clean(60 * 60 * 1000, Number.MAX_SAFE_INTEGER, 'failed')
+
+// Remove delayed regardless of age (negative grace)
+await queue.clean(-24 * 60 * 60 * 1000, Number.MAX_SAFE_INTEGER, 'delayed')
+```
+
+### deadLetter(jobId, groupId)
+
+Remove the job from active processing and make it eligible for inspection or later replay (implementation stores metadata in job hash and removes unique mapping).
+
+```ts
+await queue.deadLetter(job.id, job.groupId)
+```
+
+### getJob(id)
+
+Fetch a single job as a `Job` entity with enriched fields (compatible with BullBoard expectations).
+
+```ts
+const j = await queue.getJob(job.id)
+console.log(j.status, j.attemptsMade, j.data)
+```
+
+### getJobsByStatus(statuses, start?, end?)
+
+Fetch jobs across multiple statuses. Best-effort ordering, primarily for dashboards (BullBoard).
+
+```ts
+const jobs = await queue.getJobsByStatus(['waiting', 'active', 'failed'], 0, 50)
+```
+
+### getActiveCount() / getWaitingCount() / getDelayedCount()
+
+Counts for active, waiting, and delayed jobs.
+
+```ts
+const [a, w, d] = await Promise.all([
+  queue.getActiveCount(),
+  queue.getWaitingCount(),
+  queue.getDelayedCount(),
+])
+```
+
+### getActiveJobs() / getWaitingJobs() / getDelayedJobs()
+
+Lists of job IDs by state.
+
+```ts
+const ids = await queue.getWaitingJobs()
+```
+
+### getUniqueGroups() / getUniqueGroupsCount()
+
+List or count of group IDs that currently have jobs.
+
+```ts
+const groups = await queue.getUniqueGroups()
+const groupCount = await queue.getUniqueGroupsCount()
+```
+
+### getCompleted(limit?) / getFailed(limit?)
+
+Fetch completed or failed jobs with metadata and return values.
+
+```ts
+const completed = await queue.getCompleted(20)
+const failed = await queue.getFailed(20)
+```
+
+### getCompletedJobs(limit?) / getFailedJobs(limit?)
+
+Convenience: return completed/failed as `Job` entities.
+
+```ts
+const finished = await queue.getCompletedJobs(10)
+```
+
+### recordCompleted(...) / recordAttemptFailure(...) / recordFinalFailure(...)
+
+Low-level helpers the worker uses to persist attempt/final outcomes. Generally not needed in app code unless building custom processors.
+
+```ts
+// Example: manually record completion metadata
+await queue.recordCompleted({ id: job.id, groupId: job.groupId }, 'ok', {
+  processedOn: Date.now() - 100,
+  finishedOn: Date.now(),
+  attempts: job.attempts,
+  maxAttempts: job.maxAttempts,
+})
+```
+
+### processRepeatingJobs()
+
+Move due repeating jobs into the queue. Workers call this periodically.
+
+```ts
+const moved = await queue.processRepeatingJobs()
+```
+
+### promoteDelayedJobs()
+
+Promote delayed jobs that are now ready. Workers call this periodically.
+
+```ts
+await queue.promoteDelayedJobs()
+```
+
+### recoverDelayedGroups()
+
+Recover groups that should be ready after ordering delay. Workers invoke this as a safety net.
+
+```ts
+await queue.recoverDelayedGroups()
+```
+
+### removeRepeatingJob(groupId, repeat)
+
+Remove a repeating job definition and clean up instances.
+
+```ts
+await queue.removeRepeatingJob('reports', { pattern: '* * * * *' })
+```
+
+### pause() / resume() / isPaused()
+
+Pause or resume the queue globally.
+
+```ts
+await queue.pause()
+const paused = await queue.isPaused()
+await queue.resume()
+```
+
+### waitForEmpty(timeoutMs?)
+
+Wait until there are no active, waiting, or delayed jobs, or until timeout.
+
+```ts
+const drained = await queue.waitForEmpty(60_000)
+```
+
+### heartbeat(job, extendMs?)
+
+Extend a job's visibility/lock. Usually handled by the worker heartbeat.
+
+```ts
+await queue.heartbeat({ id: job.id, groupId: job.groupId })
+```
+
+### close()
+
+Close underlying Redis connections.
+
+```ts
+await queue.close()
+```
