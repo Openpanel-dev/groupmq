@@ -153,23 +153,6 @@ const Footer = () => {
           </div>
         </div>
 
-        {/* Legal Links Section */}
-        {/* <div className="bordered-div-padding text-muted-foreground flex items-center justify-center space-x-6 border-x border-b text-sm">
-          <a
-            href="/privacy-policy"
-            className="hover:text-foreground transition-opacity hover:opacity-80"
-          >
-            Privacy Policy
-          </a>
-          <span className="text-border">•</span>
-          <a
-            href="/terms-of-service"
-            className="hover:text-foreground transition-opacity hover:opacity-80"
-          >
-            Terms of Service
-          </a>
-        </div> */}
-
         {/* Large Logo */}
         <div className="flex justify-center border-x">
           <Logo className="justify-center" size="xxxxl" />

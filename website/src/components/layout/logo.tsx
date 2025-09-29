@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { withBase } from '@/lib/withBase';
 
 interface LogoProps {
   className?: string;
@@ -13,7 +14,7 @@ export default function Logo({
 }: LogoProps) {
   return (
     <a
-      href={href}
+      href={withBase(href)}
       className={cn(
         'group flex items-baseline font-mono font-extrabold w-24',
         size === 'xxxxl' && 'w-[1300px]',

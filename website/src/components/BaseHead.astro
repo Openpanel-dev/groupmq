@@ -2,15 +2,20 @@
 // Import the global.css file here so that it is included on
 // all pages through the use of the <BaseHead /> component.
 import '@/styles/global.css';
+import { withBase } from '@/lib/withBase';
 import { SITE_METADATA, SITE_TITLE } from '../consts';
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 
 const { title, description, image } = Astro.props;
-const finalTitle = title ? SITE_METADATA.title.template.replace('%s', title) : SITE_METADATA.title.default;
+const finalTitle = title
+  ? SITE_METADATA.title.template.replace('%s', title)
+  : SITE_METADATA.title.default;
 const finalDescription = description || SITE_METADATA.description;
 const finalImage = image || SITE_METADATA.openGraph.images[0].url;
 const imageURL = new URL(finalImage, Astro.url);
+const sitemapURL = withBase('sitemap-index.xml');
+const rssURL = withBase('rss.xml');
 ---
 
 <!-- Global Metadata -->
@@ -51,12 +56,12 @@ const imageURL = new URL(finalImage, Astro.url);
   ))
 }
 
-<link rel="sitemap" href="/sitemap-index.xml" />
+<link rel="sitemap" href={sitemapURL} />
 <link
   rel="alternate"
   type="application/rss+xml"
   title={SITE_TITLE}
-  href={new URL('rss.xml', Astro.site)}
+  href={rssURL}
 />
 <meta name="generator" content={Astro.generator} />
 

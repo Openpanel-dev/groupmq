@@ -10,7 +10,7 @@ import { defineConfig } from 'astro/config';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://openpanel-dev.github.io/groupmq/',
+  site: 'https://openpanel-dev.github.io',
   base: process.env.NODE_ENV === 'production' ? '/groupmq' : '/',
   integrations: [
     starlight({

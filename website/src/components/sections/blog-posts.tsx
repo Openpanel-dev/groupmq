@@ -14,6 +14,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { BlogPostData } from '@/lib/blog';
 import { cn } from '@/lib/utils';
+import { withBase } from '@/lib/withBase';
 
 type Category = 'All Posts';
 
@@ -203,7 +204,7 @@ function BlogPostItem({
   });
   return (
     <a
-      href={`/blog/${post.slug}`}
+      href={withBase(`/blog/${post.slug}`)}
       className={cn(
         'bordered-div-padding hover:bg-muted/30 dark:hover:bg-muted block border-b',
         className,

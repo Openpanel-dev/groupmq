@@ -3,6 +3,7 @@
 import { getCollection, render } from 'astro:content';
 import { ArrowLeft, ClockFading } from 'lucide-react';
 import DefaultLayout from '@/layouts/DefaultLayout.astro';
+import { withBase } from '@/lib/withBase';
 
 export async function getStaticPaths() {
   const posts = await getCollection('blog');
@@ -33,6 +34,7 @@ const formattedDate = new Date(post.data.date).toLocaleDateString('en-US', {
 // Get authors
 const authors = post.data.authors || [];
 const ogImage = post.data.coverImage || null;
+const blogURL = withBase('/blog')
 ---
 
 <DefaultLayout title={post.data.title} description={post.data.description} image={ogImage}>
@@ -42,7 +44,7 @@ const ogImage = post.data.coverImage || null;
     <div class="border-x">
       <div class="bordered-div-padding mx-auto max-w-3xl">
         <a
-          href="/blog"
+          href={blogURL}
           class="text-secondary hover:text-secondary/90 group inline-flex items-center text-sm font-medium md:text-base"
         >
           <ArrowLeft
@@ -107,7 +109,7 @@ const ogImage = post.data.coverImage || null;
           <div
             class="mdx-content prose prose-lg max-w-none [&>h2:first-of-type]:mt-0"
           >
-            <Content />
+            <Content  />
           </div>
         </div>
       </article>

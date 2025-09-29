@@ -20,6 +20,7 @@ import {
 import { EXTERNAL_LINKS } from '@/constants/external-links';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { cn } from '@/lib/utils';
+import { withBase } from '@/lib/withBase';
 
 type NavItem = {
   title: string;
@@ -37,9 +38,9 @@ type NavItem = {
 };
 
 const navigationItems: NavItem[] = [
-  { title: 'Home', href: '/' },
-  { title: 'Docs', href: '/docs' },
-  { title: 'Articles', href: '/blog' },
+  { title: 'Home', href: withBase('/') },
+  { title: 'Docs', href: withBase('/docs') },
+  { title: 'Articles', href: withBase('/blog') },
 ];
 
 interface NavbarProps {
@@ -353,7 +354,7 @@ function MobileNavItem({
                     }}
                   >
                     <a
-                      href={subitem.href}
+                      href={withBase(subitem.href)}
                       className="text-muted-foreground hover:text-foreground flex items-center gap-3 p-3 transition-colors duration-200"
                     >
                       {subitem.icon && <subitem.icon className="size-4.5" />}
@@ -411,7 +412,7 @@ function DesktopNavItem({
                   <ListItem
                     key={subitem.title}
                     title={subitem.title}
-                    href={subitem.href}
+                    href={withBase(subitem.href)}
                     icon={subitem.icon}
                     isHighlighted={subitem.isHighlighted}
                   >

@@ -1,6 +1,8 @@
 // Place any global data in this file.
 // You can import this data from anywhere in your site by using the `import` keyword.
 
+import { withBase } from './lib/withBase';
+
 export const SITE_TITLE = 'GroupMQ - Per-Group FIFO Queue for Node + Redis';
 export const SITE_DESCRIPTION =
   'Guaranteed ordering within a group, parallel processing across groups. Simple API, fast Lua scripts, and compatible with BullBoard.';
@@ -46,7 +48,7 @@ export const SITE_METADATA = {
     siteName: 'GroupMQ',
     images: [
       {
-        url: '/og-image.jpg',
+        url: withBase('/og-image.png'),
         width: 1200,
         height: 630,
         alt: SITE_TITLE,
@@ -57,7 +59,7 @@ export const SITE_METADATA = {
     card: 'summary_large_image',
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    images: ['/og-image.jpg'],
+    images: [withBase('/og-image.png')],
     creator: '@groupmq',
   },
 };
