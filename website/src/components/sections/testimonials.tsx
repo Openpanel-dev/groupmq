@@ -1,12 +1,13 @@
 import { Verified } from 'lucide-react';
 
 import { Marquee } from '@/components/magicui/marquee';
+import { withBase } from '@/lib/withBase';
 
 const companies = [
   {
     name: 'This could be you',
     logo: {
-      src: '/images/testimonials/placeholder.svg',
+      src: withBase('/images/testimonials/placeholder.svg'),
     },
     href: 'https://github.com/openpanel-dev/groupmq',
   },
@@ -18,7 +19,7 @@ const companies = [
   {
     name: 'This could be you',
     logo: {
-      src: '/images/testimonials/placeholder.svg',
+      src: withBase('/images/testimonials/placeholder.svg'),
     },
     href: 'https://github.com/openpanel-dev/groupmq',
   },
@@ -61,7 +62,7 @@ export function Testimonials() {
           <footer className="flex-6 self-end">
             <div className="flex items-center gap-4">
               <img
-                src="/images/testimonials/lindesvard.jpg"
+                src={withBase('/images/testimonials/lindesvard.jpg')}
                 alt="Carl Lindesvärd"
                 width={40}
                 height={40}
