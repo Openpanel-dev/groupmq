@@ -14,7 +14,10 @@ const currentPath = Astro.url.pathname;
   <head>
     <BaseHead title={title} description={description} image={image} />
   </head>
-  <body class={`min-h-screen antialiased flex flex-col`}>
+  <body class={`min-h-screen antialiased flex flex-col relative`}>
+    <div class="bg-yellow-500 text-black text-sm font-medium p-2 text-center">
+      Not production ready
+    </div>
     <Navbar currentPage={currentPath} client:load />
     <main class="flex-1"><slot /></main>
     <Footer client:load />

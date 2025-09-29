@@ -1,7 +1,7 @@
+import { defineCollection, z } from 'astro:content';
 import { docsLoader } from '@astrojs/starlight/loaders';
 import { docsSchema } from '@astrojs/starlight/schema';
 import { glob } from 'astro/loaders';
-import { defineCollection, z } from 'astro:content';
 
 const blog = defineCollection({
   // Load Markdown and MDX files in the `src/content/blog/` directory.

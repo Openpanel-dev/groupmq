@@ -10,7 +10,7 @@ import { defineConfig } from 'astro/config';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://scalar-astro-template.vercel.app',
+  site: 'https://openpanel-dev.github.io/groupmq/',
   integrations: [
     starlight({
       title: 'GroupMQ Docs',
@@ -89,7 +89,11 @@ export default defineConfig({
         themes: ['github-light', 'github-dark'],
       },
     }),
-    mdx(),
+    mdx({
+      syntaxHighlight: {
+        type: 'shiki',
+      },
+    }),
     sitemap(),
     react(),
   ],

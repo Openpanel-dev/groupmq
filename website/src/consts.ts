@@ -43,13 +43,13 @@ export const SITE_METADATA = {
   openGraph: {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    siteName: 'Scalar',
+    siteName: 'GroupMQ',
     images: [
       {
         url: '/og-image.jpg',
         width: 1200,
         height: 630,
-        alt: 'Scalar - Modern Astro Template',
+        alt: SITE_TITLE,
       },
     ],
   },
@@ -58,6 +58,6 @@ export const SITE_METADATA = {
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     images: ['/og-image.jpg'],
-    creator: '@scalar',
+    creator: '@groupmq',
   },
 };
