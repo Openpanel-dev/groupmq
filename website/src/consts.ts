@@ -33,14 +33,20 @@ export const SITE_METADATA = {
   },
   icons: {
     icon: [
-      { url: '/favicon/favicon.ico', sizes: '48x48' },
-      { url: '/favicon/favicon.svg', type: 'image/svg+xml' },
-      { url: '/favicon/favicon-96x96.png', sizes: '96x96', type: 'image/png' },
-      { url: '/favicon/favicon.svg', type: 'image/svg+xml' },
-      { url: '/favicon/favicon.ico' },
+      { url: withBase('/favicon/favicon.ico'), sizes: '48x48' },
+      { url: withBase('/favicon/favicon.svg'), type: 'image/svg+xml' },
+      {
+        url: withBase('/favicon/favicon-96x96.png'),
+        sizes: '96x96',
+        type: 'image/png',
+      },
+      { url: withBase('/favicon/favicon.svg'), type: 'image/svg+xml' },
+      { url: withBase('/favicon/favicon.ico') },
     ],
-    apple: [{ url: '/favicon/apple-touch-icon.png', sizes: '180x180' }],
-    shortcut: [{ url: '/favicon/favicon.ico' }],
+    apple: [
+      { url: withBase('/favicon/apple-touch-icon.png'), sizes: '180x180' },
+    ],
+    shortcut: [{ url: withBase('/favicon/favicon.ico') }],
   },
   openGraph: {
     title: SITE_TITLE,
