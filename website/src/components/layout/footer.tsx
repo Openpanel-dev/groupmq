@@ -32,7 +32,7 @@ const FEATURES = [
     ],
     button: {
       text: 'View on GitHub',
-      href: EXTERNAL_LINKS.GITHUB_REPO,
+      href: EXTERNAL_LINKS.GITHUB,
       className: 'bg-border hover:bg-border/80 text-foreground',
     },
   },
@@ -106,7 +106,7 @@ const Footer = () => {
         {/* Social and Status Section */}
         <div className="flex flex-col justify-between border-x border-b md:flex-row">
           <div className="bordered-div-padding flex items-center space-x-3">
-            <a
+            {/* <a
               href={EXTERNAL_LINKS.DISCORD}
               className="px-3 py-2.5 transition-opacity hover:opacity-80"
               target="_blank"
@@ -114,7 +114,7 @@ const Footer = () => {
               aria-label="Discord"
             >
               <FaDiscord className="size-5" />
-            </a>
+            </a> */}
             <a
               href={EXTERNAL_LINKS.GITHUB}
               className="px-3 py-2.5 transition-opacity hover:opacity-80"
@@ -132,15 +132,6 @@ const Footer = () => {
               aria-label="Twitter"
             >
               <FaXTwitter className="size-5" />
-            </a>
-            <a
-              href={EXTERNAL_LINKS.LINKEDIN}
-              className="px-3 py-2.5 transition-opacity hover:opacity-80"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="LinkedIn"
-            >
-              <FaLinkedin className="size-5" />
             </a>
           </div>
           <div className="bordered-div-padding flex items-center border-t text-[#00A656] md:border-t-0">

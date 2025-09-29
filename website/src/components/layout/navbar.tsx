@@ -255,7 +255,7 @@ const NavBarAction = () => {
   return (
     <div className="bordered-div-padding flex items-center justify-between border lg:border-none lg:!p-0 gap-4">
       <ThemeToggle />
-      <a href={EXTERNAL_LINKS.GITHUB_REPO} className="flex items-center">
+      <a href={EXTERNAL_LINKS.GITHUB} className="flex items-center">
         <Button
           variant="ghost"
           className="gap-2 font-medium lg:text-base"
