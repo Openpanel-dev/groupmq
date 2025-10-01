@@ -13,7 +13,7 @@ const companies = [
   },
   {
     name: 'OpenPanel.dev',
-    logo: { src: '/images/testimonials/op.svg' },
+    logo: { src: withBase('/images/testimonials/op.svg') },
     href: 'https://openpanel.dev',
   },
   {
