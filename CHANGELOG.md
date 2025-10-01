@@ -1,3 +1,10 @@
+## [1.0.0-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.3...v1.0.0-next.4) (2025-10-01)
+
+
+### Bug Fixes
+
+* cjs import ([d1203e5](https://github.com/Openpanel-dev/groupmq/commit/d1203e5bfea0df9a6e5768d01d99b886439f0499))
+
 ## [1.0.0-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.2...v1.0.0-next.3) (2025-10-01)
 
 
