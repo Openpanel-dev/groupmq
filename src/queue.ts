@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { parseExpression } from 'cron-parser';
+import CronParser from 'cron-parser';
 import type Redis from 'ioredis';
 import { Job as JobEntity } from './job';
 import { Logger } from './logger';
@@ -1504,7 +1504,7 @@ return 1
    */
   private getNextCronTime(pattern: string, fromTime: number): number {
     try {
-      const interval = parseExpression(pattern, {
+      const interval = CronParser.parseExpression(pattern, {
         currentDate: new Date(fromTime),
       });
       return interval.next().getTime();
