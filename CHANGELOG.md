@@ -1,3 +1,10 @@
+## [1.0.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.4...v1.0.0-next.5) (2025-10-01)
+
+
+### Features
+
+* add name property to the queue ([7539fa4](https://github.com/Openpanel-dev/groupmq/commit/7539fa41519aea5ec75df86ded53c203521ac5ff))
+
 ## [1.0.0-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.3...v1.0.0-next.4) (2025-10-01)
 
 
