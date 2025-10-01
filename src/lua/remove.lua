@@ -34,6 +34,9 @@ if groupId then
   local jobCount = redis.call("ZCARD", gZ)
   if jobCount == 0 then
     redis.call("ZREM", readyKey, groupId)
+    -- Clean up empty group
+    redis.call("DEL", gZ)
+    redis.call("SREM", ns .. ":groups", groupId)
   else
     local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
     if head and #head >= 2 then

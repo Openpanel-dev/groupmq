@@ -23,6 +23,12 @@ local gZ = ns .. ":g:" .. gid
 local zpop = redis.call("ZPOPMIN", gZ, 1)
 if not zpop or #zpop == 0 then
   redis.call("DEL", lockKey)
+  -- Clean up empty group
+  local jobCount = redis.call("ZCARD", gZ)
+  if jobCount == 0 then
+    redis.call("DEL", gZ)
+    redis.call("SREM", ns .. ":groups", gid)
+  end
   return nil
 end
 

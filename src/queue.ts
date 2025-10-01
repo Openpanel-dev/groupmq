@@ -332,8 +332,10 @@ end
 -- Check if group is now empty or should be removed from ready queue
 local jobCount = redis.call("ZCARD", gZ)
 if jobCount == 0 then
-  -- Group is empty, remove from ready queue
+  -- Group is empty, remove from ready queue and clean up
   redis.call("ZREM", readyKey, groupId)
+  redis.call("DEL", gZ)
+  redis.call("SREM", ns .. ":groups", groupId)
 else
   -- Group still has jobs, update ready queue with new head
   local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
@@ -408,6 +410,19 @@ return 1
     }
 
     const replies = await pipe.exec();
+
+    // Check for pipeline errors
+    if (replies) {
+      for (let i = 0; i < replies.length; i++) {
+        const [error] = replies[i];
+        if (error) {
+          this.logger.error(
+            `recordCompleted pipeline error at index ${i} for job ${job.id}:`,
+            error,
+          );
+        }
+      }
+    }
 
     // If not keeping completed jobs at all, drop idempotence mapping immediately
     if (this.keepCompleted === 0) {
@@ -532,6 +547,19 @@ return 1
     }
 
     const replies = await pipe.exec();
+
+    // Check for pipeline errors
+    if (replies) {
+      for (let i = 0; i < replies.length; i++) {
+        const [error] = replies[i];
+        if (error) {
+          this.logger.error(
+            `recordFinalFailure pipeline error at index ${i} for job ${job.id}:`,
+            error,
+          );
+        }
+      }
+    }
 
     if (this.keepFailed >= 0) {
       const zcardReply = replies?.[replies.length - 1]?.[1] as

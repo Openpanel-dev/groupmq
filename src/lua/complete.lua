@@ -13,6 +13,16 @@ local lockKey = ns .. ":lock:" .. gid
 local val = redis.call("GET", lockKey)
 if val == jobId then
   redis.call("DEL", lockKey)
+  
+  -- Clean up empty groups
+  local gZ = ns .. ":g:" .. gid
+  local jobCount = redis.call("ZCARD", gZ)
+  if jobCount == 0 then
+    -- Remove empty group zset and from groups tracking set
+    redis.call("DEL", gZ)
+    redis.call("SREM", ns .. ":groups", gid)
+  end
+  
   return 1
 end
 return 0
