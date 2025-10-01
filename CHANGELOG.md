@@ -1,3 +1,10 @@
+## [1.0.0-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.2...v1.0.0-next.3) (2025-10-01)
+
+
+### Bug Fixes
+
+* correct the exports in pkgjson ([d0aafa4](https://github.com/Openpanel-dev/groupmq/commit/d0aafa41945e709a585a0cc9352cdb22174eddc3))
+
 ## [1.0.0-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.1...v1.0.0-next.2) (2025-09-29)
 
 
