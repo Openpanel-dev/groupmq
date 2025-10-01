@@ -18,6 +18,11 @@ describe('basic per-group FIFO and parallelism', () => {
     await redis.quit();
   });
 
+  it('should have a name', () => {
+    const q = new Queue({ redis, namespace, jobTimeoutMs: 5000 });
+    expect(q.name).toBe(namespace);
+  });
+
   it('processes FIFO within group by orderMs and in parallel across groups', async () => {
     const q = new Queue({ redis, namespace, jobTimeoutMs: 5000 });
 

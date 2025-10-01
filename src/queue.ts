@@ -74,6 +74,7 @@ export class Queue<T = any> {
   private orderingDelayMs: number;
   private keepCompleted: number;
   private keepFailed: number;
+  public name: string;
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
 
@@ -83,6 +84,7 @@ export class Queue<T = any> {
     this.r = opts.redis;
     this.blockingR = opts.redis.duplicate();
     this.rawNs = opts.namespace;
+    this.name = opts.namespace;
     this.ns = `groupmq:${this.rawNs}`;
     const rawVt = opts.jobTimeoutMs ?? 30_000;
     this.vt = Math.max(1, rawVt); // Minimum 1ms
