@@ -65,7 +65,7 @@ function safeJsonParse(input: string): any {
 export class Queue<T = any> {
   private logger: Logger;
   private r: Redis;
-  private blockingR: Redis; // Separate connection for blocking operations
+  private blockingR?: Redis; // Lazy separate connection for blocking operations (fallback only)
   private rawNs: string;
   private ns: string;
   private vt: number;
@@ -82,7 +82,6 @@ export class Queue<T = any> {
     // Use the provided Redis client for main operations to preserve connection semantics
     // and a dedicated duplicate for blocking operations.
     this.r = opts.redis;
-    this.blockingR = opts.redis.duplicate();
     this.rawNs = opts.namespace;
     this.name = opts.namespace;
     this.ns = `groupmq:${this.rawNs}`;
@@ -103,9 +102,23 @@ export class Queue<T = any> {
       this.logger.error('Redis error (main):', err);
     });
 
-    this.blockingR.on('error', (err) => {
-      this.logger.error('Redis error (blocking):', err);
-    });
+    // Lazy blocking client is created on demand
+  }
+
+  private getBlockingClient(): Redis {
+    if (!this.blockingR) {
+      const dup: any = (this.r as any).duplicate?.({
+        enableAutoPipelining: true,
+        lazyConnect: true,
+      });
+      this.blockingR = dup as Redis;
+      try {
+        this.blockingR.on('error', (err) => {
+          this.logger.error('Redis error (blocking):', err);
+        });
+      } catch (_e) {}
+    }
+    return this.blockingR as Redis;
   }
 
   get redis(): Redis {
@@ -401,59 +414,45 @@ return 1
       JSON.stringify(result ?? null),
     );
     pipe.zadd(completedKey, finishedOn, job.id);
-
-    // Trim to retention
-    if (this.keepCompleted >= 0) {
-      // Remove older than keepCompleted (keep newest)
-      // Calculate how many to remove: zcard - keep
-      pipe.zcard(completedKey);
-    }
+    // Ensure idempotence mapping exists for retained completed jobs
+    // This guarantees the number of unique keys matches kept completed jobs
+    pipe.set(`${this.ns}:unique:${job.id}`, job.id);
 
     const replies = await pipe.exec();
 
     // Check for pipeline errors
-    if (replies) {
-      for (let i = 0; i < replies.length; i++) {
-        const [error] = replies[i];
-        if (error) {
-          this.logger.error(
-            `recordCompleted pipeline error at index ${i} for job ${job.id}:`,
-            error,
-          );
-        }
+    if (!replies || replies.length === 0) {
+      console.error(
+        `💥 CRITICAL: recordCompleted pipeline returned no results for job ${job.id}`,
+      );
+      throw new Error('Pipeline exec returned no results');
+    }
+
+    for (let i = 0; i < replies.length; i++) {
+      const [error] = replies[i];
+      if (error) {
+        console.error(
+          `💥 CRITICAL: recordCompleted pipeline error at index ${i} for job ${job.id}:`,
+          error,
+        );
+        this.logger.error(
+          `recordCompleted pipeline error at index ${i} for job ${job.id}:`,
+          error,
+        );
       }
     }
 
-    // If not keeping completed jobs at all, drop idempotence mapping immediately
-    if (this.keepCompleted === 0) {
-      try {
-        await this.r.del(`${this.ns}:unique:${job.id}`);
-      } catch (_e) {
-        // ignore
-      }
+    // Verify ZADD succeeded (index 1 is the zadd command)
+    const zaddResult = replies[1]?.[1];
+    if (zaddResult !== 1 && zaddResult !== 0) {
+      console.error(
+        `💥 CRITICAL: ZADD to completed set may have failed for job ${job.id}, result:`,
+        zaddResult,
+      );
     }
 
-    if (this.keepCompleted >= 0) {
-      const zcardReply = replies?.[replies.length - 1]?.[1] as
-        | number
-        | undefined;
-      if (typeof zcardReply === 'number') {
-        const toRemove = Math.max(0, zcardReply - this.keepCompleted);
-        if (toRemove > 0) {
-          const oldIds = await this.r.zrange(completedKey, 0, toRemove - 1);
-          if (oldIds.length > 0) {
-            const delPipe = this.r.multi();
-            delPipe.zremrangebyrank(completedKey, 0, toRemove - 1);
-            for (const oldId of oldIds) {
-              delPipe.del(`${this.ns}:job:${oldId}`);
-              // Also remove idempotence mapping so the same jobId can be reused
-              delPipe.del(`${this.ns}:unique:${oldId}`);
-            }
-            await delPipe.exec();
-          }
-        }
-      }
-    }
+    // Note: Retention trimming is now handled atomically in the Lua completion scripts
+    // to avoid race conditions between TS and Lua cleanup
   }
 
   /**
@@ -542,10 +541,6 @@ return 1
     );
     pipe.zadd(failedKey, finishedOn, job.id);
 
-    if (this.keepFailed >= 0) {
-      pipe.zcard(failedKey);
-    }
-
     const replies = await pipe.exec();
 
     // Check for pipeline errors
@@ -561,27 +556,8 @@ return 1
       }
     }
 
-    if (this.keepFailed >= 0) {
-      const zcardReply = replies?.[replies.length - 1]?.[1] as
-        | number
-        | undefined;
-      if (typeof zcardReply === 'number') {
-        const toRemove = Math.max(0, zcardReply - this.keepFailed);
-        if (toRemove > 0) {
-          const oldIds = await this.r.zrange(failedKey, 0, toRemove - 1);
-          if (oldIds.length > 0) {
-            const delPipe = this.r.multi();
-            delPipe.zremrangebyrank(failedKey, 0, toRemove - 1);
-            for (const oldId of oldIds) {
-              delPipe.del(`${this.ns}:job:${oldId}`);
-              // Remove idempotence mapping to allow reuse
-              delPipe.del(`${this.ns}:unique:${oldId}`);
-            }
-            await delPipe.exec();
-          }
-        }
-      }
-    }
+    // Note: Failed job retention trimming could be added here if needed,
+    // but for now we rely on the cleanup scripts to handle failed job cleanup
   }
 
   async getCompleted(limit = this.keepCompleted): Promise<
@@ -758,7 +734,7 @@ return 1
    * Inspiration by BullMQ ⭐️
    */
   private getBlockTimeout(maxTimeout: number, blockUntil?: number): number {
-    const minimumBlockTimeout = 0.001; // 1ms like BullMQ
+    const minimumBlockTimeout = 0.25; // 250ms to reduce tight polling on Redis
     const maximumBlockTimeout = 10; // 10s max like BullMQ
 
     // Handle delayed jobs case (when we know exactly when next job should be processed)
@@ -806,12 +782,12 @@ return 1
 
     if (timeSinceLastJob < 2000) {
       // Recent activity (< 2s) - responsive but slightly longer for efficiency
-      return Math.min(0.01, maxTimeout); // 10ms
+      return Math.min(0.25, maxTimeout); // 250ms
     }
 
     if (timeSinceLastJob < 10000) {
       // Moderate activity (< 10s) - balance responsiveness and efficiency
-      return Math.min(0.1, maxTimeout); // 100ms
+      return Math.min(0.25, maxTimeout); // 250ms
     }
 
     if (timeSinceLastJob < 60000) {
@@ -865,6 +841,7 @@ return 1
   async reserveBlocking(
     timeoutSec = 5,
     blockUntil?: number,
+    blockingClient?: import('ioredis').default,
   ): Promise<ReservedJob<T> | null> {
     const startTime = Date.now();
 
@@ -892,36 +869,13 @@ return 1
     // Use ready queue for blocking behavior (more reliable than marker system)
     const readyKey = nsKey(this.ns, 'ready');
 
-    let connectionTimeout: NodeJS.Timeout | undefined;
-
     try {
-      // Set up connection timeout like BullMQ to handle Redis connection issues
-      if (adaptiveTimeout > 0) {
-        connectionTimeout = setTimeout(
-          () => {
-            this.logger.warn(
-              `Connection timeout triggered after ${adaptiveTimeout}s - forcing disconnect`,
-            );
-            // Disconnect and reconnect the blocking connection if no response
-            this.blockingR.disconnect(false);
-            // Proactively reconnect to avoid a stuck disconnected state
-            try {
-              void (this.blockingR as any).connect?.();
-            } catch (_e) {
-              // ignore reconnect errors here; reserveBlocking will retry
-            }
-          },
-          adaptiveTimeout * 1000 + 1000,
-        ); // Extra 1 second buffer
-      }
-
-      // Log queue state before blocking
-      const readyCount = await this.r.zcard(readyKey);
-      this.logger.info(`Blocking state: ${readyCount} groups in ready queue`);
+      // Avoid extra zcard during every blocking call to reduce Redis CPU
 
       // Use dedicated blocking connection to avoid interfering with other operations
       const bzpopminStart = Date.now();
-      const result = await this.blockingR.bzpopmin(readyKey, adaptiveTimeout);
+      const client = blockingClient ?? this.getBlockingClient();
+      const result = await client.bzpopmin(readyKey, adaptiveTimeout);
       const bzpopminDuration = Date.now() - bzpopminStart;
 
       if (!result || result.length < 3) {
@@ -988,11 +942,6 @@ return 1
       this.logger.warn(`Falling back to regular reserve due to error`);
       return this.reserve();
     } finally {
-      // Clear the connection timeout
-      if (connectionTimeout) {
-        clearTimeout(connectionTimeout);
-      }
-
       const totalDuration = Date.now() - startTime;
       if (totalDuration > 1000) {
         this.logger.info(`ReserveBlocking completed in ${totalDuration}ms`);
@@ -1048,6 +997,44 @@ return 1
       score: parseFloat(score),
       deadlineAt: parseInt(deadline, 10),
     };
+  }
+
+  /**
+   * Reserve up to maxBatch jobs (one per available group) atomically in Lua.
+   */
+  async reserveBatch(maxBatch = 16): Promise<Array<ReservedJob<T>>> {
+    const now = Date.now();
+    const results = await evalScript<Array<string | null>>(
+      this.r,
+      'reserve-batch',
+      [
+        this.ns,
+        String(now),
+        String(this.vt),
+        String(Math.max(1, maxBatch)),
+        String(this.orderingDelayMs || 0),
+      ],
+    );
+    const out: Array<ReservedJob<T>> = [];
+    for (const r of results || []) {
+      if (!r) continue;
+      const parts = r.split('||DELIMITER||');
+      if (parts.length !== 10) continue;
+      out.push({
+        id: parts[0],
+        groupId: parts[1],
+        data: safeJsonParse(parts[2]),
+        attempts: parseInt(parts[3], 10),
+        maxAttempts: parseInt(parts[4], 10),
+        seq: parseInt(parts[5], 10),
+        timestamp: parseInt(parts[6], 10),
+        orderMs: parseInt(parts[7], 10),
+        score: parseFloat(parts[8]),
+        deadlineAt: parseInt(parts[9], 10),
+      } as ReservedJob<T>);
+    }
+    if (out.length > 0) (this as any)._lastJobTime = Date.now();
+    return out;
   }
 
   /**
@@ -1243,10 +1230,12 @@ return 1
    */
   async close(): Promise<void> {
     try {
-      await this.blockingR.quit();
+      if (this.blockingR) {
+        await this.blockingR.quit();
+      }
     } catch (_e) {
       try {
-        this.blockingR.disconnect();
+        this.blockingR?.disconnect();
       } catch (_e2) {}
     }
     try {
@@ -1294,8 +1283,8 @@ return 1
         return true;
       }
 
-      // Wait a bit before checking again
-      await sleep(100);
+      // Wait a bit before checking again (200ms to reduce CPU)
+      await sleep(200);
     }
 
     return false; // Timeout reached
@@ -1348,6 +1337,138 @@ return 1
       this.logger.warn('Error in recoverDelayedGroups:', error);
       return 0;
     }
+  }
+
+  /**
+   * Distributed one-shot scheduler: promotes delayed jobs and processes repeating jobs.
+   * Only proceeds if a short-lived scheduler lock can be acquired.
+   */
+  private schedulerLockKey(): string {
+    return `${this.ns}:sched:lock`;
+  }
+
+  async acquireSchedulerLock(ttlMs = 1500): Promise<boolean> {
+    try {
+      const res = (await (this.r as any).set(
+        this.schedulerLockKey(),
+        '1',
+        'PX',
+        ttlMs,
+        'NX',
+      )) as string | null;
+      return res === 'OK';
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  async runSchedulerOnce(now = Date.now()): Promise<void> {
+    const ok = await this.acquireSchedulerLock();
+    if (!ok) return;
+    await this.promoteDelayedJobsBounded(256, now);
+    await this.processRepeatingJobsBounded(128, now);
+  }
+
+  /**
+   * Promote up to `limit` delayed jobs that are due now. Uses a small Lua to move one item per tick.
+   */
+  async promoteDelayedJobsBounded(
+    limit = 256,
+    now = Date.now(),
+  ): Promise<number> {
+    let moved = 0;
+    for (let i = 0; i < limit; i++) {
+      try {
+        const n = await evalScript<number>(this.r, 'promote-delayed-one', [
+          this.ns,
+          String(now),
+        ]);
+        if (!n || n <= 0) break;
+        moved += n;
+      } catch (_e) {
+        break;
+      }
+    }
+    return moved;
+  }
+
+  /**
+   * Process up to `limit` repeating job ticks.
+   * Intentionally small per-tick work to keep Redis CPU flat.
+   */
+  async processRepeatingJobsBounded(
+    limit = 128,
+    now = Date.now(),
+  ): Promise<number> {
+    const scheduleKey = `${this.ns}:repeat:schedule`;
+    let processed = 0;
+    for (let i = 0; i < limit; i++) {
+      // Get one due entry
+      const due = await this.r.zrangebyscore(
+        scheduleKey,
+        0,
+        now,
+        'LIMIT',
+        0,
+        1,
+      );
+      if (!due || due.length === 0) break;
+      const repeatKey = due[0];
+
+      try {
+        const repeatJobKey = `${this.ns}:repeat:${repeatKey}`;
+        const repeatJobDataStr = await this.r.get(repeatJobKey);
+
+        if (!repeatJobDataStr) {
+          await this.r.zrem(scheduleKey, repeatKey);
+          continue;
+        }
+
+        const repeatJobData = JSON.parse(repeatJobDataStr);
+        if (repeatJobData.removed) {
+          await this.r.zrem(scheduleKey, repeatKey);
+          await this.r.del(repeatJobKey);
+          continue;
+        }
+
+        // Remove from schedule first to prevent duplicates
+        await this.r.zrem(scheduleKey, repeatKey);
+
+        // Compute next run
+        let nextRunTime: number;
+        if ('every' in repeatJobData.repeat) {
+          nextRunTime = now + repeatJobData.repeat.every;
+        } else {
+          nextRunTime = this.getNextCronTime(repeatJobData.repeat.pattern, now);
+        }
+
+        repeatJobData.nextRunTime = nextRunTime;
+        repeatJobData.lastRunTime = now;
+        await this.r.set(repeatJobKey, JSON.stringify(repeatJobData));
+        await this.r.zadd(scheduleKey, nextRunTime, repeatKey);
+
+        // Enqueue the instance
+        await evalScript<string>(this.r, 'enqueue', [
+          this.ns,
+          repeatJobData.groupId,
+          JSON.stringify(repeatJobData.data),
+          String(repeatJobData.maxAttempts ?? this.defaultMaxAttempts),
+          String(repeatJobData.orderMs ?? now),
+          String(0),
+          String(randomUUID()),
+          String(this.keepCompleted),
+        ]);
+
+        processed++;
+      } catch (error) {
+        this.logger.error(
+          `Error processing repeating job ${repeatKey}:`,
+          error,
+        );
+        await this.r.zrem(scheduleKey, repeatKey);
+      }
+    }
+    return processed;
   }
 
   /**

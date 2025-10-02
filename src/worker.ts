@@ -87,6 +87,7 @@ export type WorkerOptions<T> = {
   blockingTimeoutSec?: number; // default: 5s
   atomicCompletion?: boolean; // default: true
   logger?: Logger | true;
+  concurrency?: number; // default: 1
 };
 
 const defaultBackoff: BackoffStrategy = (attempt) => {
@@ -114,6 +115,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private atomicCompletion: boolean;
   private currentJob: ReservedJob<T> | null = null;
   private processingStartTime = 0;
+  private concurrency: number;
+  private blockingClient: import('ioredis').default | null = null;
+  private lastSchedulerTick = 0;
+  private inFlightJobs = new Set<string>();
 
   // Blocking detection and monitoring
   private lastJobPickupTime = 0;
@@ -154,6 +159,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5;
     this.atomicCompletion = opts.atomicCompletion ?? true;
+    this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
@@ -185,16 +191,35 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   async run() {
     this.logger.info(`🚀 Worker ${this.name} starting...`);
+    // Dedicated blocking client per worker with auto-pipelining to reduce contention
+    try {
+      const base = this.q.redis;
+      const dup = base.duplicate({ enableAutoPipelining: true });
+      if (typeof dup.connect === 'function') {
+        await dup.connect();
+      }
+      this.blockingClient = dup;
 
-    // Start cleanup timer if enabled
+      // Add reconnection handlers for resilience
+      this.blockingClient.on('error', (err) => {
+        this.logger.warn('Blocking client error:', err);
+      });
+      this.blockingClient.on('close', () => {
+        this.logger.warn(
+          'Blocking client disconnected, will reconnect on next operation',
+        );
+      });
+    } catch (_e) {
+      this.blockingClient = null; // fall back to queue's blocking client
+    }
+
+    // Start cleanup timer if enabled (no heavy scheduling here)
     if (this.enableCleanup) {
       this.cleanupTimer = setInterval(async () => {
         try {
           await this.q.cleanup();
-          // Also promote delayed jobs that are now ready
-          await this.q.promoteDelayedJobs();
-          // Process repeating jobs (cron jobs)
-          await this.q.processRepeatingJobs();
+          // Run lightweight scheduler guarded by a lock to ensure only one process does it
+          await this.q.runSchedulerOnce();
         } catch (err) {
           this.onError?.(err);
         }
@@ -208,10 +233,23 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let connectionRetries = 0;
     const maxConnectionRetries = 5;
 
+    let inFlight = 0;
+
     while (!this.stopping) {
       const loopStartTime = Date.now();
 
       try {
+        // Lightweight scheduler tick guarded by a short lock (run every 100ms for responsiveness)
+        if (loopStartTime - this.lastSchedulerTick > 100) {
+          try {
+            await this.q.runSchedulerOnce();
+          } catch (_e) {
+            // ignore
+          } finally {
+            this.lastSchedulerTick = loopStartTime;
+          }
+        }
+
         this.blockingStats.totalBlockingCalls++;
         const blockingStartTime = Date.now();
 
@@ -219,17 +257,40 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           `Attempting to reserve job (call #${this.blockingStats.totalBlockingCalls})...`,
         );
 
-        // Promote any delayed jobs that are now ready before attempting to reserve
-        try {
-          await this.q.promoteDelayedJobs();
-        } catch (err) {
-          this.logger.warn(`Failed to promote delayed jobs:`, err);
+        // If we have capacity, try to get a batch first (low latency, fewer round trips)
+        const capacity = Math.max(0, this.concurrency - inFlight);
+        if (capacity > 0) {
+          try {
+            const batch = await this.q.reserveBatch(Math.min(32, capacity));
+            if (batch.length > 0) {
+              for (const job of batch) {
+                this.totalJobsProcessed++;
+                inFlight++;
+                this.inFlightJobs.add(job.id);
+                void this.processOne(job)
+                  .catch((err) => this.logger.error('ProcessOne fatal:', err))
+                  .finally(() => {
+                    inFlight--;
+                    this.inFlightJobs.delete(job.id);
+                    this.blockingStats.lastActivityTime = Date.now();
+                  });
+              }
+              // Quickly iterate again to try fill remaining capacity
+              continue;
+            }
+          } catch (e) {
+            this.logger.warn(
+              'reserveBatch error, falling back to blocking:',
+              e,
+            );
+          }
         }
 
         // Enhanced blocking with BullMQ-style connection management
         const job = await this.q.reserveBlocking(
           this.blockingTimeoutSec,
           blockUntil,
+          this.blockingClient ?? undefined,
         );
 
         const blockingEndTime = Date.now();
@@ -242,17 +303,31 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           blockUntil = 0; // Reset blockUntil after successful job
 
           this.lastJobPickupTime = Date.now();
-          this.totalJobsProcessed++;
           this.blockingStats.consecutiveEmptyReserves = 0;
           this.blockingStats.lastActivityTime = Date.now();
 
           this.logger.info(
-            `Picked up job ${job.id} from group ${job.groupId} (took ${blockingDuration}ms, total jobs: ${this.totalJobsProcessed})`,
+            `Picked up job ${job.id} from group ${job.groupId} (took ${blockingDuration}ms)`,
           );
 
-          await this.processOne(job).catch((err) => {
-            this.logger.error(`ProcessOne fatal:`, err);
-          });
+          if (this.concurrency > 1) {
+            this.totalJobsProcessed++;
+            inFlight++;
+            this.inFlightJobs.add(job.id);
+            void this.processOne(job)
+              .catch((err) => this.logger.error('ProcessOne fatal:', err))
+              .finally(() => {
+                inFlight--;
+                this.inFlightJobs.delete(job.id);
+              });
+          } else {
+            this.totalJobsProcessed++;
+            this.inFlightJobs.add(job.id);
+            await this.processOne(job).catch((err) => {
+              this.logger.error(`ProcessOne fatal:`, err);
+            });
+            this.inFlightJobs.delete(job.id);
+          }
         } else {
           // No job available
           this.blockingStats.consecutiveEmptyReserves++;
@@ -272,8 +347,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             await this.logWorkerStatus();
           }
 
-          // Try to recover delayed groups
+          // After a timeout, run a single light scheduler tick
           try {
+            await this.q.runSchedulerOnce();
             const recovered = await this.q.recoverDelayedGroups();
             if (recovered > 0) {
               this.logger.info(`Recovered ${recovered} delayed groups`);
@@ -283,27 +359,51 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           }
         }
       } catch (err) {
-        // Handle connection errors like BullMQ
-        connectionRetries++;
+        // Distinguish between connection errors (retry) and other errors (log and continue)
+        const isConnErr = this.isConnectionError(err);
 
-        this.logger.error(
-          `Error (retry ${connectionRetries}/${maxConnectionRetries}):`,
-          err,
-        );
+        if (isConnErr) {
+          // Connection error - implement retry logic with backoff
+          connectionRetries++;
 
-        if (connectionRetries >= maxConnectionRetries) {
-          this.logger.error(`Max connection retries exceeded!`);
+          this.logger.error(
+            `Connection error (retry ${connectionRetries}/${maxConnectionRetries}):`,
+            err,
+          );
+
+          if (connectionRetries >= maxConnectionRetries) {
+            this.logger.error(
+              `⚠️  Max connection retries (${maxConnectionRetries}) exceeded! Worker will continue but may be experiencing persistent Redis issues.`,
+            );
+            this.emit(
+              'error',
+              new Error(
+                `Max connection retries (${maxConnectionRetries}) exceeded - worker continuing with backoff`,
+              ),
+            );
+            await this.delay(5000); // Wait 5 seconds before continuing
+            connectionRetries = 0; // Reset to continue trying
+          } else {
+            // Exponential delay before retry (1s, 2s, 3s, 4s, 5s)
+            await this.delay(1000 * connectionRetries);
+          }
+        } else {
+          // Non-connection error (programming error, Lua script error, etc.)
+          // Log it, emit it, but don't retry - just continue with next iteration
+          this.logger.error(
+            `Worker loop error (non-connection, continuing):`,
+            err,
+          );
           this.emit(
             'error',
-            new Error(
-              `Max connection retries (${maxConnectionRetries}) exceeded`,
-            ),
+            err instanceof Error ? err : new Error(String(err)),
           );
-          await this.delay(5000); // Wait 5 seconds before continuing
+
+          // Reset connection retries since this wasn't a connection issue
           connectionRetries = 0;
-        } else {
-          // Short delay before retry
-          await this.delay(1000 * connectionRetries);
+
+          // Small delay to avoid tight error loops
+          await this.delay(100);
         }
 
         this.onError?.(err);
@@ -321,6 +421,32 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   private async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Check if an error is a Redis connection error (should retry)
+   * vs a programming error (should not retry)
+   */
+  private isConnectionError(err: any): boolean {
+    if (!err) return false;
+
+    const message = err.message || '';
+    const code = err.code || '';
+
+    return (
+      message.includes('Connection is closed') ||
+      message.includes('connect ECONNREFUSED') ||
+      message.includes('ENOTFOUND') ||
+      message.includes('ECONNRESET') ||
+      message.includes('ETIMEDOUT') ||
+      message.includes('EPIPE') ||
+      message.includes('Socket closed unexpectedly') ||
+      code === 'ECONNREFUSED' ||
+      code === 'ENOTFOUND' ||
+      code === 'ECONNRESET' ||
+      code === 'ETIMEDOUT' ||
+      code === 'EPIPE'
+    );
   }
 
   /**
@@ -488,45 +614,51 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       clearInterval(this.stuckDetectionTimer);
     }
 
-    // Wait for current job to finish or timeout
+    // Wait for all in-flight jobs to finish or timeout
     const startTime = Date.now();
-    while (this.currentJob && Date.now() - startTime < gracefulTimeoutMs) {
+    while (
+      this.inFlightJobs.size > 0 &&
+      Date.now() - startTime < gracefulTimeoutMs
+    ) {
       await sleep(100);
     }
 
-    if (this.currentJob) {
+    if (this.inFlightJobs.size > 0) {
       this.logger.warn(
-        `Worker stopped with job still processing after ${gracefulTimeoutMs}ms timeout. Job ID: ${this.currentJob.id}`,
+        `Worker stopped with ${this.inFlightJobs.size} jobs still processing after ${gracefulTimeoutMs}ms timeout. Job IDs: ${Array.from(this.inFlightJobs).join(', ')}`,
       );
-      // Emit job instance for graceful-timeout
-      const nowWall = Date.now();
-      const elapsedSinceStart = this.processingStartTime
-        ? performance.now() - this.processingStartTime
-        : 0;
-      const processedOnWall = Math.max(
-        0,
-        Math.floor(nowWall - elapsedSinceStart),
-      );
-      let delayMs: number | undefined;
-      try {
-        delayMs = await this.getDelayMs(this.currentJob.id);
-      } catch (_e) {
-        // ignore
+      // Emit graceful-timeout event for the current job if one is tracked
+      if (this.currentJob) {
+        const nowWall = Date.now();
+        const elapsedSinceStart = this.processingStartTime
+          ? performance.now() - this.processingStartTime
+          : 0;
+        const processedOnWall = Math.max(
+          0,
+          Math.floor(nowWall - elapsedSinceStart),
+        );
+        let delayMs: number | undefined;
+        try {
+          delayMs = await this.getDelayMs(this.currentJob.id);
+        } catch (_e) {
+          // ignore
+        }
+        this.emit(
+          'graceful-timeout',
+          Job.fromReserved(this.q, this.currentJob, {
+            processedOn: processedOnWall,
+            finishedOn: nowWall,
+            delayMs,
+            status: 'active',
+          }),
+        );
       }
-      this.emit(
-        'graceful-timeout',
-        Job.fromReserved(this.q, this.currentJob, {
-          processedOn: processedOnWall,
-          finishedOn: nowWall,
-          delayMs,
-          status: 'active',
-        }),
-      );
     }
 
     // Clear tracking
     this.currentJob = null;
     this.processingStartTime = 0;
+    this.inFlightJobs.clear();
     this.ready = false;
     this.closed = true;
 
@@ -583,6 +715,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     let hbTimer: NodeJS.Timeout | undefined;
     const startHeartbeat = () => {
+      const minInterval = Math.max(
+        this.hbMs,
+        Math.floor((this.q.jobTimeoutMs || 30000) / 2),
+      );
       hbTimer = setInterval(async () => {
         try {
           await this.q.heartbeat(job);
@@ -590,7 +726,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           this.onError?.(e, job);
           this.emit('error', e instanceof Error ? e : new Error(String(e)));
         }
-      }, this.hbMs);
+      }, minInterval);
     };
 
     try {
@@ -655,6 +791,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           },
         );
       } catch (e) {
+        // Always log this error, even if logger is disabled
+        console.error(
+          `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
+          e,
+        );
         this.logger.warn('Failed to record completion', e);
       }
 

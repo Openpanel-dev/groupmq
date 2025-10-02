@@ -34,9 +34,13 @@ if not uniqueSet then
     if (not inProcessing) and (not inDelayed) and (not inGroup) then
       if keepCompleted == 0 then
         redis.call("DEL", jobKey)
+        redis.call("DEL", uniqueKey)
+        redis.call("SET", uniqueKey, jobId)
+      else
+        -- Job hash exists and we're keeping completed jobs, ensure unique key exists
+        redis.call("SET", uniqueKey, jobId)
+        return jobId
       end
-      redis.call("DEL", uniqueKey)
-      redis.call("SET", uniqueKey, jobId)
     else
       if keepCompleted == 0 then
         local status = redis.call("HGET", jobKey, "status")
@@ -44,6 +48,10 @@ if not uniqueSet then
           redis.call("DEL", jobKey)
           redis.call("DEL", uniqueKey)
           redis.call("SET", uniqueKey, jobId)
+        else
+          -- Job is still active, ensure unique key exists
+          redis.call("SET", uniqueKey, jobId)
+          return jobId
         end
       end
       local activeAgain = redis.call("ZSCORE", ns .. ":processing", jobId)

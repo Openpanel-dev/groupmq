@@ -16,6 +16,7 @@ BullMQ's grouping is part of the pro offering. Since OpenPanel is open-source an
 ## What GroupMQ gives you
 
 - **Per-group FIFO**: Exactly one in-flight job per `groupId`; no overtaking within the group.
+- **Concurrency support**: Process multiple jobs simultaneously with `concurrency: N` while maintaining per-group ordering.
 - **Timestamp ordering**: Respect `orderMs` and optionally `orderingDelayMs` for stricter ordering when producers are slightly out of sync.
 - **Retries and backoff**: Queue-level, job-level, and worker-level attempts with exponential backoff and dead-lettering when exhausted.
 - **Delays and scheduling**: `delay`, `runAt`, `changeDelay(id, ms)` to reschedule.
@@ -49,6 +50,7 @@ await queue.add({
 
 const worker = new Worker({
   queue,
+  concurrency: 4, // Process up to 4 jobs simultaneously
   async handler(job) {
     // job.data is fully typed
     if (job.data.type === 'charge') {
@@ -60,8 +62,9 @@ const worker = new Worker({
 worker.run();
 ```
 
-## Cron, delays, and unions (the pragmatic bits)
+## Cron, delays, and concurrency (the pragmatic bits)
 
+- **Concurrency**: Set `concurrency: N` on workers to process multiple jobs simultaneously. Great for I/O-bound workloads.
 - Repeating jobs: `repeat.every` or `repeat.pattern` (cron). For timely schedules, set `cleanupIntervalMs` to be \<= your smallest repeat interval.
 - Delayed jobs: use `delay` or `runAt`. You can reschedule with `job.changeDelay()` or `queue.changeDelay(id, ms)`.
 - Multiple job kinds in one queue: use discriminated unions (`type`/`payload`) for type-safe handlers.

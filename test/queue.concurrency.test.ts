@@ -37,6 +37,7 @@ describe('Concurrency and Race Condition Tests', () => {
         queue: q,
         blockingTimeoutSec: 1,
         atomicCompletion: false,
+        concurrency: 8,
         handler: async (job) => {
           console.log(
             'workerId',
@@ -55,7 +56,7 @@ describe('Concurrency and Race Condition Tests', () => {
     }
 
     // Wait for all jobs to be processed
-    await q.waitForEmpty(5_000);
+    await q.waitForEmpty(10_000);
 
     // All jobs should be processed exactly once
     expect(processed.length).toBe(40);

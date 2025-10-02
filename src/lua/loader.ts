@@ -6,6 +6,7 @@ import type Redis from 'ioredis';
 export type ScriptName =
   | 'enqueue'
   | 'reserve'
+  | 'reserve-batch'
   | 'reserve-from-group'
   | 'complete'
   | 'complete-and-reserve-next'
@@ -13,6 +14,7 @@ export type ScriptName =
   | 'heartbeat'
   | 'cleanup'
   | 'promote-delayed-jobs'
+  | 'promote-delayed-one'
   | 'change-delay'
   | 'get-active-count'
   | 'get-waiting-count'

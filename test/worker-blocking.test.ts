@@ -7,9 +7,12 @@ describe('Worker Blocking Detection Tests', () => {
   let redis: Redis;
   let queue: Queue;
   let workers: Worker[] = [];
-  const namespace = `test-blocking-${Date.now()}`;
+  let namespace: string;
 
   beforeEach(async () => {
+    // Create unique namespace for each test to avoid interference
+    namespace = `test-blocking-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     redis = new Redis({
       host: 'localhost',
       port: 6379,
@@ -190,8 +193,8 @@ describe('Worker Blocking Detection Tests', () => {
       });
     }
 
-    // Let it process for a bit
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Let it process for a bit (increased for scheduler tick + processing)
+    await new Promise((resolve) => setTimeout(resolve, 3000));
 
     // Check that worker isn't stuck even with short timeouts
     const metrics = worker.getWorkerMetrics();

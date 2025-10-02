@@ -45,13 +45,14 @@ new Worker({ queue, handler, heartbeatMs?, maxAttempts?, backoff?, ... })
 - `cleanupIntervalMs` — cadence for cleanup/promotions (default 60s)
 - `blockingTimeoutSec` — reserve blocking timeout (default 5s)
 - `atomicCompletion` — complete and try to reserve next in-group (default true)
+- `concurrency` — number of jobs to process concurrently (default 1)
 - `logger` — `true` to enable default logs or pass a Logger
 
 ```
 
 ### Reserve and completion
 
-Workers reserve jobs using `reserveBlocking`, send heartbeats, and on success attempt atomic in-group chaining via `completeAndReserveNext`.
+Workers reserve jobs using `reserveBlocking` and `reserveBatch` (for concurrency > 1), send heartbeats, and on success attempt atomic in-group chaining via `completeAndReserveNext`. When `concurrency > 1`, the worker can process multiple jobs simultaneously while maintaining per-group FIFO ordering.
 
 ```ts
 await worker.run()
@@ -98,9 +99,11 @@ await worker.close(30_000)
 
 ### Behavior overview
 
-- Reserves jobs via `reserveBlocking` and emits events for lifecycle changes
+- Reserves jobs via `reserveBlocking` (single job) or `reserveBatch` (multiple jobs when concurrency > 1)
+- Emits events for lifecycle changes (`ready`, `completed`, `failed`, `error`, etc.)
 - Sends heartbeats to extend visibility timeouts while processing
 - On success: emits `completed` and records completion metadata
 - On failure: applies backoff, emits `failed`, records attempt/final failure, and dead-letters when attempts are exhausted
 - Attempts atomic in-group chaining with `completeAndReserveNext` to minimize reordering
+- When `concurrency > 1`: processes multiple jobs simultaneously while respecting per-group FIFO constraints
 

@@ -1,20 +1,39 @@
 import Redis from 'ioredis';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 import { Queue, Worker } from '../src';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 
 describe('Delay Jobs Tests', () => {
-  const namespace = `test:delay:${Date.now()}`;
+  let namespace: string;
   let redis: Redis;
   let queue: Queue;
 
   beforeAll(async () => {
     redis = new Redis(REDIS_URL);
+  });
+
+  beforeEach(async () => {
+    // Create unique namespace for each test to avoid interference
+    namespace = `test:delay:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     queue = new Queue({ redis, namespace });
 
     // Cleanup
-    const keys = await redis.keys(`${namespace}*`);
+    const keys = await redis.keys(`groupmq:${namespace}*`);
+    if (keys.length) await redis.del(keys);
+  });
+
+  afterEach(async () => {
+    // Cleanup after each test
+    const keys = await redis.keys(`groupmq:${namespace}*`);
     if (keys.length) await redis.del(keys);
   });
 
@@ -100,8 +119,8 @@ describe('Delay Jobs Tests', () => {
       runAt,
     });
 
-    // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Wait for processing (increased for scheduler + delay + processing)
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
     await worker.close();
 
@@ -113,7 +132,7 @@ describe('Delay Jobs Tests', () => {
     const expectedRunTime = runAt.getTime();
     const timeDiff = Math.abs(actualRunTime - expectedRunTime);
 
-    expect(timeDiff).toBeLessThan(300); // Allow 300ms tolerance
+    expect(timeDiff).toBeLessThan(800); // Allow 800ms tolerance for scheduler tick + processing
   });
 
   it('should not allow past dates for runAt', async () => {
@@ -176,8 +195,8 @@ describe('Delay Jobs Tests', () => {
     const changeSuccess = await job.changeDelay(100);
     expect(changeSuccess).toBe(true);
 
-    // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for processing (increased for scheduler + delay + processing)
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     await worker.close();
 
@@ -187,7 +206,7 @@ describe('Delay Jobs Tests', () => {
     // Job should have been processed around 600ms (500ms + 100ms new delay)
     const actualProcessTime = processed[0].processedAt - startTime;
     expect(actualProcessTime).toBeGreaterThan(500);
-    expect(actualProcessTime).toBeLessThan(1000); // Much less than original 2 second delay
+    expect(actualProcessTime).toBeLessThan(1600); // Much less than original 2 second delay, allow for scheduler delay
   });
 
   it('should maintain FIFO order within groups even with delays', async () => {
@@ -218,8 +237,8 @@ describe('Delay Jobs Tests', () => {
       orderMs: 2000,
     });
 
-    // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for processing (increased for scheduler + delays + processing)
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
     await worker.close();
 

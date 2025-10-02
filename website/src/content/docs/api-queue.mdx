@@ -65,6 +65,18 @@ if (job) {
 }
 ```
 
+### reserveBatch(maxBatch?)
+
+Reserve up to `maxBatch` jobs (one per available group) atomically. Used internally by workers with concurrency > 1 for efficient job batching.
+
+```ts
+// Get up to 4 jobs from different groups
+const jobs = await queue.reserveBatch(4)
+for (const job of jobs) {
+  // process each job
+}
+```
+
 ### complete(\{ id, groupId \})
 
 Mark a reserved job as completed.

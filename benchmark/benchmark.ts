@@ -85,6 +85,8 @@ interface BenchmarkSettings {
   multiProcess: boolean;
 }
 
+const CONCURRENCY = 8;
+
 // Job workloads
 async function cpuIntensiveJob(): Promise<void> {
   // PBKDF2 to simulate CPU load (increased iterations for longer processing)
@@ -262,7 +264,7 @@ class BullMQAdapter extends QueueAdapter {
         },
         {
           connection: this.redis.duplicate(),
-          concurrency: 1,
+          concurrency: CONCURRENCY,
         },
       );
 
@@ -397,6 +399,8 @@ class BullMQAdapter extends QueueAdapter {
       }
     }
 
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
     // Close in-process workers
     await Promise.all(
       this.workers.map(async (w) => {
@@ -457,8 +461,8 @@ class GroupMQAdapter extends QueueAdapter {
       redis: this.redis.duplicate(),
       namespace: this.namespace,
       jobTimeoutMs: 30000,
-      maxAttempts: 1,
       orderingDelayMs: 5000,
+      keepCompleted: 1,
     });
   }
 
@@ -491,6 +495,7 @@ class GroupMQAdapter extends QueueAdapter {
 
     for (let i = 0; i < count; i++) {
       const worker = new GroupMQ.Worker({
+        concurrency: CONCURRENCY,
         queue: this.queue,
         name: `worker-${i}`,
         handler: async (job) => {
@@ -712,7 +717,7 @@ async function runBenchmark(): Promise<BenchmarkResult> {
     await adapter.enqueueJobs(opts.jobs);
 
     // Wait for completion
-    await adapter.waitForCompletion();
+    await adapter.waitForCompletion(60_000 * 15);
 
     const benchmarkEnd = performance.now();
     const durationMs = benchmarkEnd - benchmarkStart;
