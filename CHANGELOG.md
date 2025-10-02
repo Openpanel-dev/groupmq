@@ -1,3 +1,11 @@
+## [1.0.0-next.8](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.7...v1.0.0-next.8) (2025-10-02)
+
+
+### Bug Fixes
+
+* improve tests, queue and worker ([87665d9](https://github.com/Openpanel-dev/groupmq/commit/87665d9b7c9cc14290a245ecc532a5d120a64bb2))
+* timings ([9fef5f6](https://github.com/Openpanel-dev/groupmq/commit/9fef5f66f2a6521abec06f5b5458867924b50cf7))
+
 ## [1.0.0-next.7](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.6...v1.0.0-next.7) (2025-10-02)
 
 
