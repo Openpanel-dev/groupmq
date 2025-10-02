@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { withBase } from '@/lib/withBase';
 import {
   Card,
   CardContent,
@@ -114,10 +115,9 @@ export function BenchmarkChart() {
 
   // Load benchmark data
   useEffect(() => {
-    const basePath = import.meta.env.BASE_URL || '/';
     Promise.all([
-      fetch(`${basePath}groupmq.json`).then((r) => r.json()),
-      fetch(`${basePath}bullmq.json`).then((r) => r.json()),
+      fetch(`${withBase('groupmq.json')}`).then((r) => r.json()),
+      fetch(`${withBase('bullmq.json')}`).then((r) => r.json()),
     ])
       .then(([gmq, bmq]) => {
         setGroupmqData(gmq);
