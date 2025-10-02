@@ -21,9 +21,11 @@ if not uniqueSet then
   -- Duplicate detected. Check for stale unique mapping
   local exists = redis.call("EXISTS", jobKey)
   if exists == 0 then
+    -- Job doesn't exist but unique key does (stale), clean up and proceed
     redis.call("DEL", uniqueKey)
     redis.call("SET", uniqueKey, jobId)
   else
+    -- Job exists, check its status and location
     local gid = redis.call("HGET", jobKey, "groupId")
     local inProcessing = redis.call("ZSCORE", ns .. ":processing", jobId)
     local inDelayed = redis.call("ZSCORE", ns .. ":delayed", jobId)
@@ -79,7 +81,9 @@ local relativeMs = orderMs - baseEpoch
 local seq = redis.call("INCR", seqKey)
 local score = relativeMs * 1000 + seq
 
-local now = tonumber(redis.call("TIME")[1]) * 1000
+-- Get accurate timestamp with milliseconds from Redis TIME
+local timeResult = redis.call("TIME")
+local now = tonumber(timeResult[1]) * 1000 + math.floor(tonumber(timeResult[2]) / 1000)
 
 redis.call("HMSET", jobKey,
   "id", jobId,

@@ -51,7 +51,7 @@ describe('Job Tests', () => {
       eventJob = job as Job;
     });
 
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     if (eventJob) {
       expect(eventJob.processedOn).toBeDefined();
@@ -142,7 +142,7 @@ describe('Job Tests', () => {
     });
     worker.run();
 
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     expect(seen).toEqual({ n: 99 });
 
@@ -171,7 +171,7 @@ describe('Job Tests', () => {
 
     // Promote to run now
     await q.promote(job.id);
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     expect(seen).toEqual({ n: 1 });
 
@@ -203,7 +203,7 @@ describe('Job Tests', () => {
     expect(removed).toBe(true);
 
     // Wait a bit and ensure nothing processed
-    await q.waitForEmpty(500); // queue should be empty since we removed
+    await q.waitForEmpty(); // queue should be empty since we removed
     expect(processed).toBe(false);
 
     await worker.close();
@@ -228,7 +228,7 @@ describe('Job Tests', () => {
 
     worker.run();
 
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     const failedJob = await q.getJob(job.id);
     expect(failedJob).toBeDefined();

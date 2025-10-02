@@ -103,14 +103,9 @@ describe('Stress and Performance Degradation Tests', () => {
         },
         orderMs: i,
       });
-
-      if (i % 1000 === 0) {
-        console.log(`Enqueued ${i} jobs...`);
-      }
     }
 
     const enqueueTime = Date.now() - startTime;
-    console.log(`Enqueued ${totalJobs} jobs in ${enqueueTime}ms`);
 
     // Now start processing
     const processed: number[] = [];
@@ -136,7 +131,6 @@ describe('Stress and Performance Degradation Tests', () => {
       Date.now() - processingStartTime < 30000
     ) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      console.log(`Processed ${processed.length}/${totalJobs} jobs...`);
     }
 
     expect(processed.length).toBe(totalJobs);
@@ -206,10 +200,6 @@ describe('Stress and Performance Degradation Tests', () => {
 
     await Promise.all(workerPromises);
 
-    console.log(
-      `Worker churn results: ${processed.length} processed, ${new Set(processed).size} unique`,
-    );
-
     // In worker churn scenarios, some jobs might be duplicated due to visibility timeout expiry
     // Accept that we process most jobs with minimal duplicates
     expect(processed.length).toBeGreaterThan(totalJobs * 0.95); // At least 95% throughput
@@ -248,8 +238,6 @@ describe('Stress and Performance Degradation Tests', () => {
 
     // Simulate burst patterns: high activity followed by low activity
     for (let burst = 0; burst < 5; burst++) {
-      console.log(`Starting burst ${burst + 1}...`);
-
       // High activity burst (reduced size for more realistic processing)
       const burstSize = 100 + Math.random() * 50; // Smaller, more manageable bursts
       const burstPromises = [];
@@ -345,12 +333,6 @@ describe('Stress and Performance Degradation Tests', () => {
       }
 
       await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Monitor memory usage
-      const memUsage = process.memoryUsage();
-      console.log(
-        `Round ${round}: Memory ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB, Processed ${processed.length}`,
-      );
     }
 
     // Wait for processing to complete
@@ -374,8 +356,6 @@ describe('Stress and Performance Degradation Tests', () => {
     const jobsPerGroup = 10;
     const totalJobs = numGroups * jobsPerGroup;
 
-    console.log(`Creating ${totalJobs} jobs across ${numGroups} groups...`);
-
     // Create many groups with few jobs each
     const startTime = Date.now();
     for (let groupId = 0; groupId < numGroups; groupId++) {
@@ -390,14 +370,7 @@ describe('Stress and Performance Degradation Tests', () => {
         );
       }
       await Promise.all(promises);
-
-      if (groupId % 100 === 0) {
-        console.log(`Created groups 0-${groupId}...`);
-      }
     }
-
-    const enqueueTime = Date.now() - startTime;
-    console.log(`Enqueued all jobs in ${enqueueTime}ms`);
 
     const processed: { groupId: number; jobId: number }[] = [];
     const processingStartTime = Date.now();
@@ -421,7 +394,6 @@ describe('Stress and Performance Degradation Tests', () => {
       Date.now() - processingStartTime < 60000
     ) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      console.log(`Processed ${processed.length}/${totalJobs} jobs...`);
     }
 
     expect(processed.length).toBe(totalJobs);
@@ -442,7 +414,6 @@ describe('Stress and Performance Degradation Tests', () => {
 
     const processingTime = Date.now() - processingStartTime;
     const throughput = totalJobs / (processingTime / 1000);
-    console.log(`Processing throughput: ${Math.round(throughput)} jobs/sec`);
 
     expect(throughput).toBeGreaterThan(100); // At least 100 jobs/sec
 

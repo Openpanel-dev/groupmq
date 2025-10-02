@@ -45,7 +45,7 @@ describe('Idempotent enqueue with optional jobId', () => {
     });
     worker.run();
 
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     expect(processed.length).toBe(1);
     expect(processed[0]).toEqual({ n: 1 });
@@ -75,7 +75,7 @@ describe('Idempotent enqueue with optional jobId', () => {
     });
     worker.run();
 
-    await q.waitForEmpty(2000);
+    await q.waitForEmpty();
 
     expect(processed).toEqual([job.id]);
 
@@ -102,16 +102,23 @@ describe('Idempotent enqueue with optional jobId', () => {
     expect(job.id).toBe(customId);
 
     // Process first job
+    const processed: any[] = [];
     const worker1 = new Worker({
+      name: 'worker1',
       queue: q,
       blockingTimeoutSec: 1,
-      handler: async (_job) => {},
+      handler: async (job) => {
+        processed.push({
+          ...job.data,
+          worker: 'worker1',
+        });
+      },
     });
     worker1.run();
-    await q.waitForEmpty(2000);
-    await worker1.close();
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await q.waitForEmpty();
+    await worker1.close();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // At this point, keepCompleted:0 should have removed job and unique mapping
     const job2 = await q.add({
@@ -121,21 +128,29 @@ describe('Idempotent enqueue with optional jobId', () => {
     });
     expect(job2.id).toBe(customId);
 
-    // Ensure the second job runs
-    const processed: number[] = [];
+    // Process second job
     const worker2 = new Worker({
+      name: 'worker2',
       queue: q,
       blockingTimeoutSec: 1,
       handler: async (job) => {
-        processed.push((job.data as any).n);
+        processed.push({
+          ...job.data,
+          worker: 'worker2',
+        });
       },
     });
     worker2.run();
-    await q.waitForEmpty(2000);
 
-    expect(processed).toEqual([2]);
-
+    await q.waitForEmpty();
     await worker2.close();
+
+    // Verify both jobs were processed correctly
+    expect(processed).toEqual([
+      { n: 1, worker: 'worker1' },
+      { n: 2, worker: 'worker2' },
+    ]);
+
     await redis.quit();
   });
 });

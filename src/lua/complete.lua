@@ -12,30 +12,31 @@ local jobKey = ns .. ":job:" .. jobId
 local completedKey = ns .. ":completed"
 local nowMs = tonumber(redis.call("TIME")[1]) * 1000
 
--- If keepCompleted retention is configured, check count BEFORE adding this job
-local toRemove = 0
-if keepCompleted >= 0 then
+-- Handle retention based on keepCompleted
+if keepCompleted > 0 then
+  -- Add to completed set and handle retention
+  redis.call("HSET", jobKey, "status", "completed", "finishedOn", tostring(nowMs))
+  redis.call("ZADD", completedKey, nowMs, jobId)
+  
+  -- Trim old entries if we exceed the limit
   local zcount = redis.call("ZCARD", completedKey)
-  toRemove = zcount - keepCompleted + 1  -- +1 because we're about to add this job
-end
-
--- Mark job as completed and add to completed set
-redis.call("HSET", jobKey, "status", "completed", "finishedOn", tostring(nowMs))
-redis.call("ZADD", completedKey, nowMs, jobId)
-
--- Trim old entries if we exceed the limit
-if toRemove > 0 then
-  local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
-  if #oldIds > 0 then
-    redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
-    for i = 1, #oldIds do
-      local oldId = oldIds[i]
-      redis.call("DEL", ns .. ":job:" .. oldId)
-      redis.call("DEL", ns .. ":unique:" .. oldId)
+  local toRemove = zcount - keepCompleted
+  if toRemove > 0 then
+    local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
+    if #oldIds > 0 then
+      redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
+      for i = 1, #oldIds do
+        local oldId = oldIds[i]
+        redis.call("DEL", ns .. ":job:" .. oldId)
+        redis.call("DEL", ns .. ":unique:" .. oldId)
+      end
     end
   end
+else
+  -- keepCompleted == 0: Delete job immediately, don't add to completed set
+  redis.call("DEL", jobKey)
+  redis.call("DEL", ns .. ":unique:" .. jobId)
 end
--- Note: unique keys are only deleted when job hashes are trimmed above
 local lockKey = ns .. ":lock:" .. gid
 local val = redis.call("GET", lockKey)
 if val == jobId then

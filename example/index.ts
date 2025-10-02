@@ -63,9 +63,35 @@ const run = async () => {
 
   workers.forEach((worker) => {
     worker.on('completed', (job) => {
-      console.log('job completed', job.id, {
-        elapsed: job.finishedOn! - job.processedOn!,
-      });
+      // console.log('job completed', job.id, {
+      //   elapsed: job.finishedOn! - job.processedOn!,
+      // });
+      const completedAt = Date.now();
+      const addedAt = job.timestamp;
+      const processedOn = job.processedOn;
+      const finishedOn = job.finishedOn;
+
+      console.log('\n📊 JOB TIMING BREAKDOWN:');
+      console.log(
+        `  ⏱️  Job added at:        ${new Date(addedAt).toISOString()}`,
+      );
+      console.log(
+        `  ⏱️  Job processedOn:     ${new Date(processedOn!).toISOString()}`,
+      );
+      console.log(
+        `  ⏱️  Job finishedOn:      ${new Date(finishedOn!).toISOString()}`,
+      );
+      console.log(
+        `  ⏱️  Event fired at:      ${new Date(completedAt).toISOString()}`,
+      );
+      console.log(
+        `  🔴 Add → ProcessedOn:    ${processedOn! - addedAt}ms ⚠️  THIS IS THE DELAY!`,
+      );
+      console.log(
+        `  🟢 ProcessedOn → Finish: ${finishedOn! - processedOn!}ms (actual work)`,
+      );
+      console.log(`  🎯 Total:                ${finishedOn! - addedAt}ms\n`);
+      console.log('✅ Job completed:', job.id);
     });
 
     worker.on('error', (err) => {

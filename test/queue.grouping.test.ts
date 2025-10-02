@@ -32,9 +32,6 @@ describe('grouping', () => {
     const worker = new Worker<{ n: number }>({
       queue: q,
       handler: async (job) => {
-        console.log(
-          `Processing job n:${(job.data as any).n}, orderMs:${job.orderMs}, score:${job.score}, seq:${job.seq}`,
-        );
         order.push(`${job.groupId}:${(job.data as any).n}`);
         await wait(50);
       },
@@ -62,35 +59,13 @@ describe('grouping', () => {
       },
     ];
 
-    console.log(
-      'Expected order by orderMs:',
-      jobs
-        .slice()
-        .sort((a, b) => a.orderMs - b.orderMs)
-        .map((j) => `n:${j.data.n} (${j.orderMs})`),
-    );
-
-    // Enqueue ALL jobs first, then start worker to avoid race conditions
     for (const job of jobs) {
-      const jobId = await q.add(job);
-      console.log(
-        `Enqueued job n:${job.data.n}, orderMs:${job.orderMs}, jobId:${jobId}`,
-      );
+      await q.add(job);
     }
 
-    // Now start the worker after all jobs are enqueued
     worker.run();
 
-    await wait(500); // Give more time
-
-    console.log('Actual processing order:', order);
-    console.log(
-      'Expected processing order:',
-      jobs
-        .slice()
-        .sort((a, b) => a.orderMs - b.orderMs)
-        .map((j) => `${j.groupId}:${j.data.n}`),
-    );
+    await q.waitForEmpty();
 
     expect(order).toEqual(
       jobs
@@ -114,9 +89,6 @@ describe('grouping', () => {
     const worker = new Worker<{ n: number }>({
       queue: q,
       handler: async (job) => {
-        console.log(
-          `Processing job n:${job.data.n}, orderMs:${job.orderMs}, processedAt:${Date.now()}`,
-        );
         order.push(`${job.groupId}:${job.data.n}`);
         await wait(10);
       },
@@ -126,8 +98,6 @@ describe('grouping', () => {
     const now = Date.now();
 
     // Scenario: Events arrive out of order, but we want to process them in order
-    console.log(`Starting scenario at ${now}`);
-
     // Enqueue jobs with timestamps in a way that tests the delay
     await q.add({
       groupId: 'delay-group',
@@ -147,16 +117,11 @@ describe('grouping', () => {
       orderMs: now - 1000, // Past timestamp, between job 1 and 3
     });
 
-    console.log(`Enqueued all jobs at ${Date.now()}`);
-
     // Start worker
     worker.run();
 
     // Wait for processing to complete (longer wait to ensure future job is processed)
     await wait(3500);
-
-    console.log(`Final order: ${order}`);
-    console.log(`Jobs processed: ${order.length}`);
 
     // Should process in correct chronological order
     expect(order.length).toBe(3);

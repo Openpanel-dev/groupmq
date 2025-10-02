@@ -389,6 +389,11 @@ return 1
       data?: unknown; // legacy
     },
   ): Promise<void> {
+    // Skip recording if keepCompleted is 0 (Lua script already handled deletion)
+    if (this.keepCompleted === 0) {
+      return;
+    }
+
     const jobKey = `${this.ns}:job:${job.id}`;
     const completedKey = `${this.ns}:completed`;
 
@@ -1243,16 +1248,14 @@ return 1
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeoutMs) {
-      const [activeCount, waitingCount, delayedCount] = await Promise.all([
-        this.getActiveCount(),
-        this.getWaitingCount(),
-        this.getDelayedCount(),
-      ]);
-      if (activeCount === 0 && waitingCount === 0 && delayedCount === 0) {
+      // Single atomic Lua script checks all queue structures
+      const isEmpty = await evalScript<number>(this.r, 'is-empty', [this.ns]);
+
+      if (isEmpty === 1) {
+        await sleep(0);
         return true;
       }
 
-      // Wait a bit before checking again (200ms to reduce CPU)
       await sleep(200);
     }
 
@@ -1334,8 +1337,9 @@ return 1
   async runSchedulerOnce(now = Date.now()): Promise<void> {
     const ok = await this.acquireSchedulerLock();
     if (!ok) return;
-    await this.promoteDelayedJobsBounded(256, now);
-    await this.processRepeatingJobsBounded(128, now);
+    // Reduced limits for faster execution: process a few jobs per tick instead of hundreds
+    await this.promoteDelayedJobsBounded(32, now);
+    await this.processRepeatingJobsBounded(16, now);
   }
 
   /**

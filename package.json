@@ -37,11 +37,12 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm --format cjs --dts --sourcemap && node scripts/copy-lua.mjs",
-    "test": "vitest run --reporter=dot --no-file-parallelism",
+    "test": "vitest run --no-file-parallelism",
     "test:many": "for i in {1..50}; do pnpm run test; done",
     "dev:test": "vitest --watch",
     "monitor": "jiti cli.ts",
     "benchmark": "jiti benchmark/benchmark.ts",
+    "benchmark:both": "pnpm benchmark --mq both --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "benchmark:groupmq": "pnpm benchmark --mq groupmq --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "benchmark:bullmq": "pnpm benchmark --mq bullmq --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "format": "biome format .",

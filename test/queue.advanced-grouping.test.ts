@@ -99,7 +99,7 @@ describe('Advanced Grouping Tests', () => {
     const worker1Promise = worker1.run();
     const worker2Promise = worker2.run();
 
-    await queue.waitForEmpty(5_000);
+    await queue.waitForEmpty();
 
     // Stop workers
     await worker1.close();
@@ -161,9 +161,6 @@ describe('Advanced Grouping Tests', () => {
 
     expect(g1Job1Duration).toBeGreaterThan(4500); // Should be ~5000ms
     expect(g2Job1Duration).toBeLessThan(500); // Should be ~100ms
-
-    console.log(`g1-job1 duration: ${g1Job1Duration}ms`);
-    console.log(`g2-job1 duration: ${g2Job1Duration}ms`);
   }, 20000); // 20 second timeout for the test
 
   it('should ensure second worker remains idle when no cross-group work is available', async () => {
@@ -199,7 +196,6 @@ describe('Advanced Grouping Tests', () => {
             timestamp: Date.now(),
           });
 
-          console.log(`Worker ${workerId} processing ${(job.data as any).id}`);
           await new Promise((resolve) =>
             setTimeout(resolve, (job.data as any).duration),
           );
@@ -266,22 +262,12 @@ describe('Advanced Grouping Tests', () => {
 
     if (worker1Jobs.length === 2) {
       expect(worker2Jobs.length).toBe(0);
-      console.log('Worker1 processed both jobs, Worker2 remained idle');
     } else if (worker2Jobs.length === 2) {
       expect(worker1Jobs.length).toBe(0);
-      console.log('Worker2 processed both jobs, Worker1 remained idle');
     } else {
-      // This would indicate incorrect behavior - jobs should not be split between workers for same group
       throw new Error(
         `Jobs incorrectly split: Worker1=${worker1Jobs.length}, Worker2=${worker2Jobs.length}`,
       );
     }
-
-    console.log('Worker activity log:');
-    workerActivity.forEach((activity) => {
-      console.log(
-        `${activity.timestamp}: ${activity.workerId} ${activity.action} ${activity.jobId || ''}`,
-      );
-    });
   }, 15000);
 });

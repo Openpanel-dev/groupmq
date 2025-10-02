@@ -40,6 +40,7 @@ type NavItem = {
 const navigationItems: NavItem[] = [
   { title: 'Home', href: withBase('/') },
   { title: 'Docs', href: withBase('/docs') },
+  { title: 'Benchmarks', href: withBase('/benchmarks') },
   { title: 'Articles', href: withBase('/blog') },
 ];
 

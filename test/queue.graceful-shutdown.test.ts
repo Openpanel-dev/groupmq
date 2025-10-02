@@ -60,7 +60,7 @@ describe('Graceful Shutdown Tests', () => {
     // Signal job 1 to complete
     job1CanComplete = true;
 
-    await queue.waitForEmpty(5_000);
+    await queue.waitForEmpty();
 
     // Should be back to 0
     expect(await queue.getActiveCount()).toBe(0);
@@ -74,7 +74,7 @@ describe('Graceful Shutdown Tests', () => {
     const queue = new Queue({ redis, namespace: `${namespace}:empty` });
 
     // Should return true immediately if already empty
-    expect(await queue.waitForEmpty(1000)).toBe(true);
+    expect(await queue.waitForEmpty()).toBe(true);
 
     // Add jobs and start processing
     await queue.add({ groupId: 'empty-group', data: { id: 1 } });
@@ -105,7 +105,7 @@ describe('Graceful Shutdown Tests', () => {
 
     // Should wait and return true when empty
     const startTime = Date.now();
-    const isEmpty = await queue.waitForEmpty(5000);
+    const isEmpty = await queue.waitForEmpty();
     const elapsed = Date.now() - startTime;
 
     expect(isEmpty).toBe(true);

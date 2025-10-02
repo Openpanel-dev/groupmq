@@ -84,6 +84,7 @@ export type WorkerOptions<T> = {
   backoff?: BackoffStrategy;
   enableCleanup?: boolean; // default: true
   cleanupIntervalMs?: number; // default: 60s
+  schedulerIntervalMs?: number; // default: 1s
   blockingTimeoutSec?: number; // default: 5s
   atomicCompletion?: boolean; // default: true
   logger?: LoggerInterface | true;
@@ -111,13 +112,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private enableCleanup: boolean;
   private cleanupMs: number;
   private cleanupTimer?: NodeJS.Timeout;
+  private schedulerTimer?: NodeJS.Timeout;
+  private schedulerMs: number;
   private blockingTimeoutSec: number;
   private atomicCompletion: boolean;
   private currentJob: ReservedJob<T> | null = null;
   private processingStartTime = 0;
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
-  private lastSchedulerTick = 0;
   private inFlightJobs = new Set<string>();
 
   // Blocking detection and monitoring
@@ -157,6 +159,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.backoff = opts.backoff ?? defaultBackoff;
     this.enableCleanup = opts.enableCleanup ?? true;
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
+    this.schedulerMs = opts.schedulerIntervalMs ?? 1000;
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s like BullMQ's drainDelay
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
@@ -193,12 +196,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.logger.info(`🚀 Worker ${this.name} starting...`);
     // Dedicated blocking client per worker with auto-pipelining to reduce contention
     try {
-      const base = this.q.redis;
-      const dup = base.duplicate({ enableAutoPipelining: true });
-      if (typeof dup.connect === 'function') {
-        await dup.connect();
-      }
-      this.blockingClient = dup;
+      this.blockingClient = this.q.redis.duplicate({
+        enableAutoPipelining: true,
+      });
 
       // Add reconnection handlers for resilience
       this.blockingClient.on('error', (err) => {
@@ -213,17 +213,28 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       this.blockingClient = null; // fall back to queue's blocking client
     }
 
-    // Start cleanup timer if enabled (no heavy scheduling here)
+    // Start cleanup timer if enabled
     if (this.enableCleanup) {
+      // Cleanup timer: only runs cleanup, not scheduler
       this.cleanupTimer = setInterval(async () => {
         try {
           await this.q.cleanup();
-          // Run lightweight scheduler guarded by a lock to ensure only one process does it
-          await this.q.runSchedulerOnce();
         } catch (err) {
           this.onError?.(err);
         }
       }, this.cleanupMs);
+
+      // Scheduler timer: promotes delayed jobs and processes cron jobs
+      // Runs independently in the background, even when worker is blocked on BZPOPMIN
+      // Distributed lock ensures only one worker executes at a time
+      const schedulerInterval = Math.min(this.schedulerMs, this.cleanupMs);
+      this.schedulerTimer = setInterval(async () => {
+        try {
+          await this.q.runSchedulerOnce();
+        } catch (err) {
+          // Ignore errors, this is best-effort
+        }
+      }, schedulerInterval);
     }
 
     // Start stuck detection monitoring
@@ -239,17 +250,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       const loopStartTime = Date.now();
 
       try {
-        // Lightweight scheduler tick guarded by a short lock (run every 100ms for responsiveness)
-        if (loopStartTime - this.lastSchedulerTick > 100) {
-          try {
-            await this.q.runSchedulerOnce();
-          } catch (_e) {
-            // ignore
-          } finally {
-            this.lastSchedulerTick = loopStartTime;
-          }
-        }
-
         this.blockingStats.totalBlockingCalls++;
         const blockingStartTime = Date.now();
 
@@ -347,9 +347,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             await this.logWorkerStatus();
           }
 
-          // After a timeout, run a single light scheduler tick
+          // Recovery for delayed groups that might be stuck
+          // Note: runSchedulerOnce() is handled by the background scheduler timer
           try {
-            await this.q.runSchedulerOnce();
             const recovered = await this.q.recoverDelayedGroups();
             if (recovered > 0) {
               this.logger.info(`Recovered ${recovered} delayed groups`);
@@ -608,6 +608,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
+    }
+
+    if (this.schedulerTimer) {
+      clearInterval(this.schedulerTimer);
     }
 
     if (this.stuckDetectionTimer) {

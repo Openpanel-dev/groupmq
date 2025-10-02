@@ -42,7 +42,7 @@ describe('basic per-group FIFO and parallelism', () => {
     await q.add({ groupId: 'gB', data: { n: 3 }, orderMs: 1500 });
     await q.add({ groupId: 'gB', data: { n: 4 }, orderMs: 1600 });
 
-    await q.waitForEmpty(5_000);
+    await q.waitForEmpty();
 
     // Check FIFO inside each group
     const aIndices = seen.filter((s) => s.startsWith('gA:'));

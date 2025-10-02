@@ -9,34 +9,34 @@ local keepCompleted = tonumber(ARGV[7]) or 0
 
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
 redis.call("ZREM", ns .. ":processing", completedJobId)
--- Atomically mark completed and add to completed set for retention
 local jobKey = ns .. ":job:" .. completedJobId
 local completedKey = ns .. ":completed"
 
--- If keepCompleted retention is configured, check count BEFORE adding this job
-local toRemove = 0
-if keepCompleted >= 0 then
+-- Handle retention based on keepCompleted
+if keepCompleted > 0 then
+  -- Add to completed set and handle retention
+  redis.call("HSET", jobKey, "status", "completed", "finishedOn", tostring(now))
+  redis.call("ZADD", completedKey, now, completedJobId)
+  
+  -- Trim old entries if we exceed the limit
   local zcount = redis.call("ZCARD", completedKey)
-  toRemove = zcount - keepCompleted + 1  -- +1 because we're about to add this job
-end
-
-redis.call("HSET", jobKey, "status", "completed", "finishedOn", tostring(now))
-redis.call("ZADD", completedKey, now, completedJobId)
-
--- Trim old entries if we exceed the limit
-if toRemove > 0 then
-  local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
-  if #oldIds > 0 then
-    redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
-    for i = 1, #oldIds do
-      local oldId = oldIds[i]
-      redis.call("DEL", ns .. ":job:" .. oldId)
-      redis.call("DEL", ns .. ":unique:" .. oldId)
+  local toRemove = zcount - keepCompleted
+  if toRemove > 0 then
+    local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
+    if #oldIds > 0 then
+      redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
+      for i = 1, #oldIds do
+        local oldId = oldIds[i]
+        redis.call("DEL", ns .. ":job:" .. oldId)
+        redis.call("DEL", ns .. ":unique:" .. oldId)
+      end
     end
   end
+else
+  -- keepCompleted == 0: Delete job immediately, don't add to completed set
+  redis.call("DEL", jobKey)
+  redis.call("DEL", ns .. ":unique:" .. completedJobId)
 end
-
--- Note: unique keys are only deleted when job hashes are trimmed above
 
 local lockKey = ns .. ":lock:" .. gid
 local val = redis.call("GET", lockKey)

@@ -31,7 +31,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
     const errors: string[] = [];
 
     const worker = new Worker({
-      logger: true,
       queue: q,
       blockingTimeoutSec: 1,
       handler: async (job) => {
@@ -83,7 +82,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
 
     const processed: string[] = [];
     const worker = new Worker({
-      logger: true,
       queue: q,
       blockingTimeoutSec: 1,
       handler: async (job) => {
@@ -128,7 +126,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
     const errors: string[] = [];
 
     const worker = new Worker({
-      logger: true,
       queue: q,
       blockingTimeoutSec: 1, // Test blocking operations during network issues
       handler: async (job) => {
@@ -196,7 +193,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
     let processingJob1 = false;
 
     const worker = new Worker({
-      logger: true,
       queue: q,
       blockingTimeoutSec: 1,
       handler: async (job) => {
@@ -263,7 +259,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
       // Create multiple workers
       for (let i = 0; i < 3; i++) {
         const worker = new Worker({
-          logger: true,
           queue: q,
           blockingTimeoutSec: 1,
           handler: async (job) => {
@@ -306,7 +301,6 @@ describe('Redis Disconnect/Reconnect Tests', () => {
     const errors: string[] = [];
 
     const worker = new Worker({
-      logger: true,
       queue: q,
       blockingTimeoutSec: 1,
       handler: async (job) => {

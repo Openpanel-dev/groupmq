@@ -30,7 +30,7 @@ describe('Queue.clean', () => {
     w.run();
     await q.add({ groupId: 'g1', data: { n: 1 } });
     await q.add({ groupId: 'g1', data: { n: 2 } });
-    await q.waitForEmpty(5000);
+    await q.waitForEmpty();
 
     // Ensure there are completed jobs
     const before = await q.getCompletedCount();
@@ -66,7 +66,7 @@ describe('Queue.clean', () => {
 
     await q.add({ groupId: 'g1', data: { n: 1 } });
     await q.add({ groupId: 'g1', data: { n: 2 } });
-    await q.waitForEmpty(5000);
+    await q.waitForEmpty();
 
     const before = await q.getFailedCount();
     expect(before).toBeGreaterThanOrEqual(2);

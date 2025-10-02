@@ -89,7 +89,6 @@ describe('retry keeps failed job as head and respects backoff', () => {
     worker.run();
 
     await wait(500);
-    console.log(processed);
 
     // We expect item 1 to be retried (at-least-once) and then item 2
     expect(processed[0]).toBe(1);
@@ -145,15 +144,12 @@ describe('retry keeps failed job as head and respects backoff', () => {
       blockingTimeoutSec: 1,
       handler: async (job) => {
         processed.push((job.data as any).timestamp);
-        console.log(`Processing: ${(job.data as any).timestamp}`);
       },
     });
     worker.run();
 
     // Wait for all events to be processed
     await wait(1000);
-
-    console.log('Processing order:', processed);
 
     // They should be processed in chronological order (by orderMs):
     // 095, 100, 102, 102, 103
@@ -196,7 +192,6 @@ describe('retry keeps failed job as head and respects backoff', () => {
       handler: async (job) => {
         await wait(10);
         processed.push((job.data as any).order);
-        console.log(`Worker1 processing: ${(job.data as any).order}`);
       },
     });
 
@@ -206,16 +201,14 @@ describe('retry keeps failed job as head and respects backoff', () => {
       handler: async (job) => {
         await wait(10);
         processed.push((job.data as any).order);
-        console.log(`Worker2 processing: ${(job.data as any).order}`);
       },
     });
 
     worker1.run();
     worker2.run();
 
-    await wait(800);
-
-    console.log('Multi-worker processing order:', processed);
+    // Wait for all jobs to process
+    await wait(1500);
 
     // With multiple workers, order might be violated
     // This test documents the problem rather than expecting perfect order

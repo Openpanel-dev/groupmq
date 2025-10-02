@@ -132,7 +132,7 @@ describe('Delay Jobs Tests', () => {
     const expectedRunTime = runAt.getTime();
     const timeDiff = Math.abs(actualRunTime - expectedRunTime);
 
-    expect(timeDiff).toBeLessThan(800); // Allow 800ms tolerance for scheduler tick + processing
+    expect(timeDiff).toBeLessThan(1000); // Allow 1s tolerance for scheduler tick + processing
   });
 
   it('should not allow past dates for runAt', async () => {
@@ -157,7 +157,7 @@ describe('Delay Jobs Tests', () => {
     });
 
     // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     await worker.close();
 
@@ -206,7 +206,7 @@ describe('Delay Jobs Tests', () => {
     // Job should have been processed around 600ms (500ms + 100ms new delay)
     const actualProcessTime = processed[0].processedAt - startTime;
     expect(actualProcessTime).toBeGreaterThan(500);
-    expect(actualProcessTime).toBeLessThan(1600); // Much less than original 2 second delay, allow for scheduler delay
+    expect(actualProcessTime).toBeLessThan(1700); // Much less than original 2 second delay, allow for scheduler delay
   });
 
   it('should maintain FIFO order within groups even with delays', async () => {

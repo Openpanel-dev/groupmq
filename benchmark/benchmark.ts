@@ -14,7 +14,10 @@ import * as GroupMQ from '../src/index';
 // CLI setup
 const program = new Command();
 program
-  .requiredOption('--mq <bullmq|groupmq>', 'Queue implementation to benchmark')
+  .requiredOption(
+    '--mq <bullmq|groupmq|both>',
+    'Queue implementation to benchmark',
+  )
   .option(
     '--jobs <n>',
     'Number of jobs to process',
@@ -31,7 +34,15 @@ program
   .option('--output <file>', 'Output file for results', '')
   .parse();
 
-const opts = program.opts();
+type BenchmarkOptions = {
+  mq: 'bullmq' | 'groupmq' | 'both';
+  jobs: number;
+  workers: number;
+  jobType: 'cpu' | 'io';
+  multiProcess: boolean;
+  output: string;
+};
+const cliOpts = program.opts() as BenchmarkOptions;
 
 // Types
 interface JobMetrics {
@@ -195,10 +206,11 @@ class BullMQAdapter extends QueueAdapter {
   private workerProcesses: any[] = [];
   private completedJobs: JobMetrics[] = [];
   private queueName: string;
-
-  constructor() {
+  private opts: BenchmarkOptions;
+  constructor(opts: BenchmarkOptions) {
     super();
     this.queueName = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.opts = opts;
   }
 
   async setup(): Promise<void> {
@@ -286,7 +298,7 @@ class BullMQAdapter extends QueueAdapter {
           'benchmark/worker-process.ts',
           'bullmq',
           this.queueName,
-          opts.jobType,
+          cliOpts.jobType,
           i.toString(),
         ],
         {
@@ -442,12 +454,12 @@ class GroupMQAdapter extends QueueAdapter {
   private workerProcesses: any[] = [];
   private completedJobs: JobMetrics[] = [];
   private namespace: string;
-  private workerCount: number;
+  private opts: BenchmarkOptions;
 
-  constructor(workerCount: number) {
+  constructor(opts: BenchmarkOptions) {
     super();
     this.namespace = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    this.workerCount = workerCount;
+    this.opts = opts;
   }
 
   async setup(): Promise<void> {
@@ -471,7 +483,7 @@ class GroupMQAdapter extends QueueAdapter {
 
     for (let i = 0; i < count; i++) {
       await this.queue.add({
-        groupId: `group-${i % this.workerCount}`,
+        groupId: `group-${i % this.opts.workers}`,
         data: {
           id: `job-${i}`,
           enqueuedAt: Date.now(),
@@ -544,7 +556,7 @@ class GroupMQAdapter extends QueueAdapter {
           'benchmark/worker-process.ts',
           'groupmq',
           this.namespace,
-          opts.jobType,
+          cliOpts.jobType,
           i.toString(),
         ],
         {
@@ -690,16 +702,12 @@ class GroupMQAdapter extends QueueAdapter {
 }
 
 // Main benchmark function
-async function runBenchmark(): Promise<BenchmarkResult> {
-  console.log(`\n🚀 Starting ${opts.mq.toUpperCase()} benchmark`);
-  console.log(
-    `📊 Config: ${opts.jobs} jobs, ${opts.workers} workers, ${opts.jobType} workload${opts.multiProcess ? ' (multi-process)' : ' (single-process)'}`,
-  );
-
+async function runBenchmark(
+  timestamp: number,
+  opts: BenchmarkOptions,
+): Promise<BenchmarkResult> {
   const adapter =
-    opts.mq === 'bullmq'
-      ? new BullMQAdapter()
-      : new GroupMQAdapter(opts.workers);
+    opts.mq === 'bullmq' ? new BullMQAdapter(opts) : new GroupMQAdapter(opts);
   const monitor = new SystemMonitor();
   const jobHandler = opts.jobType === 'cpu' ? cpuIntensiveJob : ioIntensiveJob;
 
@@ -741,7 +749,7 @@ async function runBenchmark(): Promise<BenchmarkResult> {
     const totalTimes = completedJobs.map((j) => j.totalMs);
 
     const result: BenchmarkResult = {
-      timestamp: Date.now(),
+      timestamp,
       queueType: opts.mq,
       jobType: opts.jobType,
       totalJobs: opts.jobs,
@@ -817,7 +825,7 @@ function displayResults(result: BenchmarkResult): void {
 
 //
 
-function saveResults(result: BenchmarkResult): void {
+function saveResults(opts: BenchmarkOptions, result: BenchmarkResult): void {
   let outputPath: string;
   if (opts.output) {
     outputPath = path.resolve(opts.output);
@@ -855,9 +863,25 @@ function saveResults(result: BenchmarkResult): void {
 // Run the benchmark
 (async () => {
   try {
-    const result = await runBenchmark();
-    displayResults(result);
-    saveResults(result);
+    const timestamp = Date.now();
+    if (cliOpts.mq === 'both') {
+      const results1 = await runBenchmark(timestamp, {
+        ...cliOpts,
+        mq: 'groupmq',
+      });
+      const results2 = await runBenchmark(timestamp, {
+        ...cliOpts,
+        mq: 'bullmq',
+      });
+      displayResults(results1);
+      displayResults(results2);
+      saveResults(cliOpts, results1);
+      saveResults(cliOpts, results2);
+    } else {
+      const result = await runBenchmark(timestamp, cliOpts);
+      displayResults(result);
+      saveResults(cliOpts, result);
+    }
     console.log('\n✅ Benchmark completed successfully');
     process.exit(0);
   } catch (error) {

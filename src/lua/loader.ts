@@ -27,7 +27,8 @@ export type ScriptName =
   | 'recover-delayed-groups'
   | 'cleanup-poisoned-group'
   | 'remove'
-  | 'clean-status';
+  | 'clean-status'
+  | 'is-empty';
 
 const cacheByClient = new WeakMap<Redis, Map<ScriptName, string>>();
 

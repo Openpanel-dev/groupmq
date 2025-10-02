@@ -39,13 +39,6 @@ describe('Concurrency and Race Condition Tests', () => {
         atomicCompletion: false,
         concurrency: 8,
         handler: async (job) => {
-          console.log(
-            'workerId',
-            workerId,
-            'job.data.id',
-            (job.data as any).id,
-          );
-
           processed.push((job.data as any).id);
           processedBy[(job.data as any).id] = workerId;
           await new Promise((resolve) => setTimeout(resolve, 50));
@@ -56,7 +49,7 @@ describe('Concurrency and Race Condition Tests', () => {
     }
 
     // Wait for all jobs to be processed
-    await q.waitForEmpty(10_000);
+    await q.waitForEmpty();
 
     // All jobs should be processed exactly once
     expect(processed.length).toBe(40);
@@ -300,10 +293,6 @@ describe('Concurrency and Race Condition Tests', () => {
       expect(jobs.sort((a, b) => a - b)).toEqual(expectedJobs);
     });
 
-    console.log(
-      `Enqueue time: ${enqueueTime}ms, Processing time: ${timestamps[timestamps.length - 1] - timestamps[0]}ms`,
-    );
-
     await worker.close();
     await redis.quit();
   });
@@ -405,9 +394,6 @@ describe('Concurrency and Race Condition Tests', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 3000)); // Longer wait for retries
 
-    console.log('Processed jobs:', processed);
-    console.log('Failed attempts:', failed);
-
     // Should process independent jobs first (A1, B1), then dependent jobs (A2, B2) via retry
     expect(processed).toContain('A1'); // Independent, should succeed
     expect(processed).toContain('B1'); // Independent, should succeed
@@ -416,7 +402,6 @@ describe('Concurrency and Race Condition Tests', () => {
 
     // The test should pass even if there are no failures (jobs might process in perfect order)
     // expect(failed.length).toBeGreaterThan(0);
-    console.log('Deadlock test completed successfully - all jobs processed');
 
     await worker.close();
     await redis.quit();

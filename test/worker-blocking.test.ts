@@ -48,8 +48,6 @@ describe('Worker Blocking Detection Tests', () => {
   });
 
   it('should detect worker blocking with many groups and few workers', async () => {
-    console.log('\n🧪 Testing blocking detection with many groups...');
-
     // Create 8 workers
     const workerCount = 8;
     const groupCount = 100; // Many more groups than workers
@@ -58,9 +56,6 @@ describe('Worker Blocking Detection Tests', () => {
       const worker = new Worker({
         queue: queue,
         handler: async (job) => {
-          console.log(
-            `Worker ${i} processing job ${job.id} from group ${job.groupId}`,
-          );
           // Simulate work
           await new Promise((resolve) => setTimeout(resolve, 50));
         },
@@ -90,11 +85,8 @@ describe('Worker Blocking Detection Tests', () => {
     }
 
     await Promise.all(jobPromises);
-    console.log(`✅ Added ${groupCount} jobs to ${groupCount} groups`);
 
     // Monitor workers for a period to see if any get stuck
-    console.log('🔍 Monitoring workers for blocking issues...');
-
     let totalJobsProcessed = 0;
     const monitorDuration = 10_000;
     const startTime = Date.now();
@@ -126,33 +118,13 @@ describe('Worker Blocking Detection Tests', () => {
         }
       }
 
-      console.log(
-        `📊 Progress: ${currentTotal} jobs processed, ${activeWorkers}/${workerCount} workers active`,
-      );
       totalJobsProcessed = currentTotal;
 
       // If all jobs are processed, break early
       const queueStats = await queue.getJobCounts();
       if (queueStats.active === 0 && queueStats.waiting === 0) {
-        console.log('✅ All jobs completed!');
         break;
       }
-    }
-
-    // Final analysis
-    console.log('\n📈 Final Worker Analysis:');
-    for (const worker of workers) {
-      const metrics = worker.getWorkerMetrics();
-      console.log(`Worker ${metrics.name}:`);
-      console.log(`  Jobs Processed: ${metrics.totalJobsProcessed}`);
-      console.log(`  Time Since Last Job: ${metrics.timeSinceLastJob}ms`);
-      console.log(
-        `  Consecutive Empty Reserves: ${metrics.blockingStats.consecutiveEmptyReserves}`,
-      );
-      console.log(
-        `  Total Blocking Calls: ${metrics.blockingStats.totalBlockingCalls}`,
-      );
-      console.log(`  Is Processing: ${metrics.isProcessing}`);
     }
 
     // Verify that workers are working efficiently
@@ -166,13 +138,10 @@ describe('Worker Blocking Detection Tests', () => {
   }, 30000); // 30 second timeout for the test
 
   it('should handle Redis connection issues gracefully', async () => {
-    console.log('\n🧪 Testing Redis connection resilience...');
-
     // Create a worker
     const worker = new Worker({
       queue: queue,
       handler: async (job) => {
-        console.log(`Processing job ${job.id}`);
         await new Promise((resolve) => setTimeout(resolve, 100));
       },
       blockingTimeoutSec: 1, // Very short timeout
@@ -198,14 +167,11 @@ describe('Worker Blocking Detection Tests', () => {
 
     // Check that worker isn't stuck even with short timeouts
     const metrics = worker.getWorkerMetrics();
-    console.log('Worker metrics:', metrics);
 
     expect(metrics.totalJobsProcessed).toBeGreaterThan(0);
   }, 15000);
 
   it('should detect stuck workers with comprehensive logging', async () => {
-    console.log('\n🧪 Testing stuck worker detection...');
-
     // Create a worker that will get "stuck" (simulate by adding jobs it can't process)
     const worker = new Worker({
       queue: queue,
@@ -239,8 +205,6 @@ describe('Worker Blocking Detection Tests', () => {
     await new Promise((resolve) => setTimeout(resolve, 5000));
 
     const metrics = worker.getWorkerMetrics();
-    console.log('Stuck test metrics:', metrics);
-
     // Worker should have attempted to process jobs
     expect(metrics.blockingStats.totalBlockingCalls).toBeGreaterThan(0);
   }, 15000);
