@@ -3,6 +3,7 @@
 import BaseHead from '@/components/BaseHead.astro';
 import Footer from '@/components/layout/footer';
 import Navbar from '@/components/layout/navbar';
+import Tracking from '@/components/Tracking.astro';
 
 // Removed Banner (template ad) as part of cleanup
 
@@ -13,6 +14,7 @@ const currentPath = Astro.url.pathname;
 <html lang="en">
   <head>
     <BaseHead title={title} description={description} image={image} />
+    <Tracking />
   </head>
   <body class={`min-h-screen antialiased flex flex-col relative`}>
     <div class="bg-yellow-500 text-black text-sm font-medium p-2 text-center">

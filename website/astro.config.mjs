@@ -6,7 +6,6 @@ import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
-// import { EXTERNAL_LINKS } from 'src/constants/external-links';
 
 // https://astro.build/config
 export default defineConfig({
@@ -14,6 +13,9 @@ export default defineConfig({
   base: process.env.NODE_ENV === 'production' ? '/groupmq' : '/',
   integrations: [
     starlight({
+      components: {
+        SkipLink: './src/components/Tracking.astro',
+      },
       title: 'GroupMQ Docs',
       description: 'A Per-Group FIFO Queue for Node + Redis',
       favicon: '/favicon/favicon.svg',
@@ -39,6 +41,7 @@ export default defineConfig({
             { label: 'What is GroupMQ?', slug: 'docs' },
             { label: 'Key Features', slug: 'key-features' },
             { label: 'GroupMQ vs. BullMQ', slug: 'groupmq-vs-bullmq' },
+            { label: 'Benchmarks', link: '/benchmarks' },
           ],
         },
         {
