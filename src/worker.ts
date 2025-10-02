@@ -157,7 +157,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.backoff = opts.backoff ?? defaultBackoff;
     this.enableCleanup = opts.enableCleanup ?? true;
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5;
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s like BullMQ's drainDelay
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 

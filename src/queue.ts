@@ -734,7 +734,7 @@ return 1
    * Inspiration by BullMQ ⭐️
    */
   private getBlockTimeout(maxTimeout: number, blockUntil?: number): number {
-    const minimumBlockTimeout = 0.25; // 250ms to reduce tight polling on Redis
+    const minimumBlockTimeout = 0.001; // 1ms like BullMQ for fast job pickup
     const maximumBlockTimeout = 10; // 10s max like BullMQ
 
     // Handle delayed jobs case (when we know exactly when next job should be processed)
@@ -766,43 +766,12 @@ return 1
       }
     }
 
-    // Enhanced activity-based adaptive timeout with worker context
-    const now = Date.now();
-    const recentActivity = (this as any)._lastJobTime || 0;
-    const timeSinceLastJob = now - recentActivity;
-
-    // Track failed reserves for more intelligent adaptation
-    const consecutiveEmptyReserves =
-      (this as any)._consecutiveEmptyReserves || 0;
-
-    if (timeSinceLastJob < 500) {
-      // Very recent activity - stay highly responsive
-      return minimumBlockTimeout;
-    }
-
-    if (timeSinceLastJob < 2000) {
-      // Recent activity (< 2s) - responsive but slightly longer for efficiency
-      return Math.min(0.25, maxTimeout); // 250ms
-    }
-
-    if (timeSinceLastJob < 10000) {
-      // Moderate activity (< 10s) - balance responsiveness and efficiency
-      return Math.min(0.25, maxTimeout); // 250ms
-    }
-
-    if (timeSinceLastJob < 60000) {
-      // Some recent activity (< 1min) - lean towards efficiency
-      return Math.min(1.0, maxTimeout); // 1s
-    }
-
-    // No recent activity but check if we've been seeing empty reserves
-    if (consecutiveEmptyReserves > 5) {
-      // If we're consistently getting empty reserves, use longer timeout to reduce Redis load
-      return Math.min(Math.max(2.0, maxTimeout * 0.5), maximumBlockTimeout); // At least 2s, up to half max
-    }
-
-    // No recent activity - use full timeout for efficiency
-    return Math.min(maxTimeout, maximumBlockTimeout);
+    // Use maxTimeout when draining (similar to BullMQ's drainDelay), but clamp to minimum
+    // This keeps the worker responsive while balancing Redis load
+    return Math.max(
+      minimumBlockTimeout,
+      Math.min(maxTimeout, maximumBlockTimeout),
+    );
   }
 
   /**
