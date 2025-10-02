@@ -257,9 +257,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           `Attempting to reserve job (call #${this.blockingStats.totalBlockingCalls})...`,
         );
 
-        // If we have capacity, try to get a batch first (low latency, fewer round trips)
+        // If we have capacity and concurrency > 1, try to get a batch first (low latency, fewer round trips)
         const capacity = Math.max(0, this.concurrency - inFlight);
-        if (capacity > 0) {
+        if (capacity > 0 && this.concurrency > 1) {
           try {
             const batch = await this.q.reserveBatch(Math.min(32, capacity));
             if (batch.length > 0) {
