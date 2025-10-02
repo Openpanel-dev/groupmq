@@ -1,3 +1,11 @@
+## [1.0.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.5...v1.0.0-next.6) (2025-10-02)
+
+
+### Bug Fixes
+
+* better cleaning ([434f4b1](https://github.com/Openpanel-dev/groupmq/commit/434f4b138caf62a1c40f383d581b4cb35901eb12))
+* better cpu usage for multiple workers, concurrency support ([f59a4f5](https://github.com/Openpanel-dev/groupmq/commit/f59a4f587dd5a1868917d76187d0f04dadf314c5))
+
 ## [1.0.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.4...v1.0.0-next.5) (2025-10-01)
 
 
