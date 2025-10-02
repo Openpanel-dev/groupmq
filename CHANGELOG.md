@@ -1,3 +1,12 @@
+## [1.0.0-next.7](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.6...v1.0.0-next.7) (2025-10-02)
+
+
+### Bug Fixes
+
+* concurrency and lua script ([9b8abe5](https://github.com/Openpanel-dev/groupmq/commit/9b8abe5b1d3bac2ba1865684b14c11d0b9e33ba5))
+* concurrency issue ([e9f70bb](https://github.com/Openpanel-dev/groupmq/commit/e9f70bbdc24107da62ce8ce0ea86b08b209c5c96))
+* logger interface (support pino and winston) ([69917d4](https://github.com/Openpanel-dev/groupmq/commit/69917d4912a5b81881c5e31777e9e0d4987d554f))
+
 ## [1.0.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.5...v1.0.0-next.6) (2025-10-02)
 
 
