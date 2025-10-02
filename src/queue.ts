@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import CronParser from 'cron-parser';
 import type Redis from 'ioredis';
 import { Job as JobEntity } from './job';
-import { Logger } from './logger';
+import { Logger, type LoggerInterface } from './logger';
 import { evalScript } from './lua/loader';
 import type { Status } from './status';
 
 export type QueueOptions = {
-  logger?: Logger | boolean;
+  logger?: LoggerInterface | boolean;
   redis: Redis;
   namespace: string;
   jobTimeoutMs?: number;
@@ -63,7 +63,7 @@ function safeJsonParse(input: string): any {
 }
 
 export class Queue<T = any> {
-  private logger: Logger;
+  private logger: LoggerInterface;
   private r: Redis;
   private blockingR?: Redis; // Lazy separate connection for blocking operations (fallback only)
   private rawNs: string;

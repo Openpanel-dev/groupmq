@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { Job } from './job';
-import { Logger } from './logger';
+import { Logger, type LoggerInterface } from './logger';
 import type { AddOptions, Queue, ReservedJob } from './queue';
 
 export type BackoffStrategy = (attempt: number) => number; // ms
@@ -86,7 +86,7 @@ export type WorkerOptions<T> = {
   cleanupIntervalMs?: number; // default: 60s
   blockingTimeoutSec?: number; // default: 5s
   atomicCompletion?: boolean; // default: true
-  logger?: Logger | true;
+  logger?: LoggerInterface | true;
   concurrency?: number; // default: 1
 };
 
@@ -97,7 +97,7 @@ const defaultBackoff: BackoffStrategy = (attempt) => {
 };
 
 class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
-  private logger: Logger;
+  private logger: LoggerInterface;
   public readonly name: string;
   private q: Queue<T>;
   private handler: WorkerOptions<T>['handler'];
