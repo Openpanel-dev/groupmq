@@ -76,6 +76,10 @@ export class Queue<T = any> {
   private keepFailed: number;
   public name: string;
 
+  // Internal tracking for adaptive behavior
+  private _lastJobTime = 0;
+  private _consecutiveEmptyReserves = 0;
+
   // Inline defineCommand bindings removed; using external Lua via evalsha
 
   constructor(opts: QueueOptions) {
@@ -222,7 +226,7 @@ export class Queue<T = any> {
       deadlineAt: Number.parseInt(parts[9], 10),
     } as ReservedJob<T>;
 
-    (this as any)._lastJobTime = Date.now();
+    this._lastJobTime = Date.now();
 
     return job;
   }
@@ -830,25 +834,16 @@ return 1
   }
 
   /**
-   * Check if an error is a Redis connection error
+   * Check if an error is a Redis connection error (should retry)
+   * Aligned with BullMQ's conservative approach
    */
-  private isConnectionError(err: any): boolean {
-    // Check for common Redis connection error patterns
+  isConnectionError(err: any): boolean {
     if (!err) return false;
 
     const message = err.message || '';
-    const code = err.code || '';
 
     return (
-      message.includes('Connection is closed') ||
-      message.includes('connect ECONNREFUSED') ||
-      message.includes('ENOTFOUND') ||
-      message.includes('ECONNRESET') ||
-      message.includes('ETIMEDOUT') ||
-      code === 'ECONNREFUSED' ||
-      code === 'ENOTFOUND' ||
-      code === 'ECONNRESET' ||
-      code === 'ETIMEDOUT'
+      message === 'Connection is closed.' || message.includes('ECONNREFUSED')
     );
   }
 
@@ -868,7 +863,7 @@ return 1
     // First try immediate reserve (fast path)
     const immediateJob = await this.reserve();
     if (immediateJob) {
-      this.logger.info(
+      this.logger.debug(
         `Immediate reserve successful (${Date.now() - startTime}ms)`,
       );
       return immediateJob;
@@ -876,7 +871,7 @@ return 1
 
     // Use BullMQ-style adaptive timeout with delayed job consideration
     const adaptiveTimeout = this.getBlockTimeout(timeoutSec, blockUntil);
-    this.logger.info(
+    this.logger.debug(
       `Starting blocking operation (timeout: ${adaptiveTimeout}s)`,
     );
 
@@ -893,15 +888,16 @@ return 1
       const bzpopminDuration = Date.now() - bzpopminStart;
 
       if (!result || result.length < 3) {
-        this.logger.info(`Blocking timeout/empty (took ${bzpopminDuration}ms)`);
+        this.logger.debug(
+          `Blocking timeout/empty (took ${bzpopminDuration}ms)`,
+        );
         // Track consecutive empty reserves for adaptive timeout
-        (this as any)._consecutiveEmptyReserves =
-          ((this as any)._consecutiveEmptyReserves || 0) + 1;
+        this._consecutiveEmptyReserves = this._consecutiveEmptyReserves + 1;
         return null; // Timeout or no result
       }
 
       const [, groupId, score] = result;
-      this.logger.info(
+      this.logger.debug(
         `Blocking result: group=${groupId}, score=${score} (took ${bzpopminDuration}ms)`,
       );
 
@@ -910,36 +906,29 @@ return 1
       let job = await this.reserveFromGroup(groupId);
 
       if (!job) {
-        // Group might be empty or locked, put it back and try general reserve
-        await this.r.zadd(readyKey, score, groupId);
+        // Group might be empty or locked
+        // NOTE: reserve-from-group.lua already re-adds locked groups to :ready
+        // So we should NOT re-add here to avoid duplicates that cause BZPOPMIN spinning
+        // Just try a general reserve to pick from other available groups
         job = await this.reserve();
       }
       const reserveDuration = Date.now() - reserveStart;
 
       if (job) {
-        this.logger.info(
+        this.logger.debug(
           `Successful job reserve after blocking: ${job.id} from group ${job.groupId} (reserve took ${reserveDuration}ms)`,
         );
         // Track job activity for adaptive timeout
-        (this as any)._lastJobTime = Date.now();
+        this._lastJobTime = Date.now();
         // Reset consecutive empty reserves counter
-        (this as any)._consecutiveEmptyReserves = 0;
+        this._consecutiveEmptyReserves = 0;
       } else {
         this.logger.warn(
           `Blocking found group but reserve failed: group=${groupId} (reserve took ${reserveDuration}ms)`,
         );
 
-        // CRITICAL FIX: Handle both poisoned groups and temporarily locked groups
-        const cleanupResult = await this.cleanupPoisonedGroup(groupId);
-
-        if (cleanupResult === 'locked') {
-          // Group is temporarily locked by another worker, back off to avoid spinning
-          this.logger.info(
-            `Group ${groupId} is locked, backing off to prevent infinite loop`,
-          );
-          // Use a short delay to prevent immediate retry of the same locked group
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
+        // Handle poisoned groups (all jobs exceeded max attempts)
+        await this.cleanupPoisonedGroup(groupId);
       }
       return job;
     } catch (err) {
@@ -958,7 +947,7 @@ return 1
     } finally {
       const totalDuration = Date.now() - startTime;
       if (totalDuration > 1000) {
-        this.logger.info(`ReserveBlocking completed in ${totalDuration}ms`);
+        this.logger.debug(`ReserveBlocking completed in ${totalDuration}ms`);
       }
     }
   }
@@ -1047,7 +1036,7 @@ return 1
         deadlineAt: parseInt(parts[9], 10),
       } as ReservedJob<T>);
     }
-    if (out.length > 0) (this as any)._lastJobTime = Date.now();
+    if (out.length > 0) this._lastJobTime = Date.now();
     return out;
   }
 

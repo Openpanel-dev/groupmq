@@ -3,6 +3,7 @@ export interface LoggerInterface {
   warn(...args: any[]): void;
   info(...args: any[]): void;
   error(...args: any[]): void;
+  debug(...args: any[]): void;
 }
 
 // Default logger implementation
@@ -11,6 +12,12 @@ export class Logger implements LoggerInterface {
     private readonly enabled: boolean,
     private readonly name: string,
   ) {}
+
+  debug(...args: any[]) {
+    if (this.enabled) {
+      console.debug(`[${this.name}]`, ...args);
+    }
+  }
 
   info(...args: any[]) {
     if (this.enabled) {

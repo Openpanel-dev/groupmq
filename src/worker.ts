@@ -121,6 +121,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
   private inFlightJobs = new Set<string>();
+  private inFlightPromises = new Set<Promise<void>>();
 
   // Blocking detection and monitoring
   private lastJobPickupTime = 0;
@@ -161,8 +162,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
     this.schedulerMs = opts.schedulerIntervalMs ?? 1000;
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s like BullMQ's drainDelay
-    this.atomicCompletion = opts.atomicCompletion ?? true;
-    this.concurrency = Math.max(1, opts.concurrency ?? 1);
+    // Disable atomic completion for concurrency > 1 to avoid race conditions
+    // With concurrency > 1, the chained job from completeAndReserveNext can't be properly tracked
+    const requestedConcurrency = Math.max(1, opts.concurrency ?? 1);
+    this.atomicCompletion =
+      requestedConcurrency === 1 && (opts.atomicCompletion ?? true);
+    this.concurrency = requestedConcurrency;
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
@@ -231,7 +236,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       this.schedulerTimer = setInterval(async () => {
         try {
           await this.q.runSchedulerOnce();
-        } catch (err) {
+        } catch (_err) {
           // Ignore errors, this is best-effort
         }
       }, schedulerInterval);
@@ -253,27 +258,31 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         this.blockingStats.totalBlockingCalls++;
         const blockingStartTime = Date.now();
 
-        this.logger.info(
+        this.logger.debug(
           `Attempting to reserve job (call #${this.blockingStats.totalBlockingCalls})...`,
         );
 
         // If we have capacity and concurrency > 1, try to get a batch first (low latency, fewer round trips)
         const capacity = Math.max(0, this.concurrency - inFlight);
-        if (capacity > 0 && this.concurrency > 1) {
+        if (capacity > 1 && this.concurrency > 1) {
           try {
             const batch = await this.q.reserveBatch(Math.min(32, capacity));
             if (batch.length > 0) {
               for (const job of batch) {
+                // Check if stopping between batch processing
+                if (this.stopping) break;
                 this.totalJobsProcessed++;
                 inFlight++;
                 this.inFlightJobs.add(job.id);
-                void this.processOne(job)
+                const promise = this.processOne(job)
                   .catch((err) => this.logger.error('ProcessOne fatal:', err))
                   .finally(() => {
                     inFlight--;
                     this.inFlightJobs.delete(job.id);
+                    this.inFlightPromises.delete(promise);
                     this.blockingStats.lastActivityTime = Date.now();
                   });
+                this.inFlightPromises.add(promise);
               }
               // Quickly iterate again to try fill remaining capacity
               continue;
@@ -306,7 +315,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           this.blockingStats.consecutiveEmptyReserves = 0;
           this.blockingStats.lastActivityTime = Date.now();
 
-          this.logger.info(
+          this.logger.debug(
             `Picked up job ${job.id} from group ${job.groupId} (took ${blockingDuration}ms)`,
           );
 
@@ -314,12 +323,15 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             this.totalJobsProcessed++;
             inFlight++;
             this.inFlightJobs.add(job.id);
-            void this.processOne(job)
+            const promise = this.processOne(job)
               .catch((err) => this.logger.error('ProcessOne fatal:', err))
               .finally(() => {
                 inFlight--;
                 this.inFlightJobs.delete(job.id);
+                this.inFlightPromises.delete(promise);
+                this.blockingStats.lastActivityTime = Date.now();
               });
+            this.inFlightPromises.add(promise);
           } else {
             this.totalJobsProcessed++;
             this.inFlightJobs.add(job.id);
@@ -332,13 +344,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           // No job available
           this.blockingStats.consecutiveEmptyReserves++;
 
-          this.logger.info(
+          this.logger.debug(
             `No job available (blocking took ${blockingDuration}ms, consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
           );
 
           // Log warning if too many consecutive empty reserves (but only if we've processed jobs before and queue seems to have work)
           if (
-            this.blockingStats.consecutiveEmptyReserves % 10 === 0 &&
+            this.blockingStats.consecutiveEmptyReserves % 100 === 0 &&
             this.shouldWarnAboutEmptyReserves()
           ) {
             this.logger.warn(
@@ -347,12 +359,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             await this.logWorkerStatus();
           }
 
-          // Recovery for delayed groups that might be stuck
+          // Recovery for delayed groups
           // Note: runSchedulerOnce() is handled by the background scheduler timer
           try {
             const recovered = await this.q.recoverDelayedGroups();
             if (recovered > 0) {
-              this.logger.info(`Recovered ${recovered} delayed groups`);
+              this.logger.debug(`Recovered ${recovered} delayed groups`);
             }
           } catch (err) {
             this.logger.warn(`Recovery error:`, err);
@@ -360,7 +372,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         }
       } catch (err) {
         // Distinguish between connection errors (retry) and other errors (log and continue)
-        const isConnErr = this.isConnectionError(err);
+        const isConnErr = this.q.isConnectionError(err);
 
         if (isConnErr) {
           // Connection error - implement retry logic with backoff
@@ -421,32 +433,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   private async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Check if an error is a Redis connection error (should retry)
-   * vs a programming error (should not retry)
-   */
-  private isConnectionError(err: any): boolean {
-    if (!err) return false;
-
-    const message = err.message || '';
-    const code = err.code || '';
-
-    return (
-      message.includes('Connection is closed') ||
-      message.includes('connect ECONNREFUSED') ||
-      message.includes('ENOTFOUND') ||
-      message.includes('ECONNRESET') ||
-      message.includes('ETIMEDOUT') ||
-      message.includes('EPIPE') ||
-      message.includes('Socket closed unexpectedly') ||
-      code === 'ECONNREFUSED' ||
-      code === 'ENOTFOUND' ||
-      code === 'ECONNRESET' ||
-      code === 'ETIMEDOUT' ||
-      code === 'EPIPE'
-    );
   }
 
   /**
@@ -518,8 +504,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       await this.logWorkerStatus();
     }
 
-    if (this.blockingStats.consecutiveEmptyReserves > 50) {
-      // Too many empty reserves
+    if (
+      this.blockingStats.consecutiveEmptyReserves > 50 &&
+      this.shouldWarnAboutEmptyReserves()
+    ) {
+      // Too many empty reserves (but queue might have jobs)
       this.logger.warn(
         `BLOCKING ALERT: ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves`,
       );
@@ -566,6 +555,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       this.logger.info(
         `  🔄 Currently Processing: ${this.currentJob?.id || 'none'}`,
       );
+      this.logger.info(
+        `  ⚡ In-Flight Jobs (concurrency=${this.concurrency}): ${this.inFlightJobs.size} active`,
+      );
+      if (this.inFlightJobs.size > 0) {
+        this.logger.info(
+          `  📋 In-Flight Job IDs: ${Array.from(this.inFlightJobs).join(', ')}`,
+        );
+      }
 
       if (this.currentJob) {
         const processingTime = now - this.processingStartTime;
@@ -624,7 +621,16 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       this.inFlightJobs.size > 0 &&
       Date.now() - startTime < gracefulTimeoutMs
     ) {
-      await sleep(100);
+      // For concurrency > 1, wait for promises to settle
+      if (this.inFlightPromises.size > 0) {
+        await Promise.race([
+          Promise.allSettled(Array.from(this.inFlightPromises)),
+          sleep(100),
+        ]);
+      } else {
+        // For concurrency = 1, just wait a bit
+        await sleep(100);
+      }
     }
 
     if (this.inFlightJobs.size > 0) {
@@ -805,8 +811,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
       // If we got a next job from the same group, process it immediately (maintaining FIFO)
       // But DON'T chain recursively - just process this one job atomically
+      // NOTE: This should only happen with concurrency=1, as atomicCompletion is disabled for concurrency > 1
       if (this.atomicCompletion && nextJob) {
-        this.logger.info(
+        this.logger.debug(
           `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
         );
 

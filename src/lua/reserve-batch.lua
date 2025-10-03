@@ -78,14 +78,9 @@ for i = 1, #groups, 2 do
         table.insert(processedGroups, gid)
       end
     end
-  else
-    -- Still locked, put back in ready with previous score
-    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-    if head and #head >= 2 then
-      local headScore = tonumber(head[2])
-      redis.call("ZADD", readyKey, headScore, gid)
-    end
   end
+  -- Note: Locked groups remain in ready queue (from original ZRANGE)
+  -- They'll be skipped by next reserve attempt
 end
 
 -- Remove only the groups that were actually processed from ready queue
