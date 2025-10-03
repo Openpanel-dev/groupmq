@@ -33,13 +33,15 @@ const FEATURES = [
     button: {
       text: 'View on GitHub',
       href: EXTERNAL_LINKS.GITHUB,
-      className: 'bg-border hover:bg-border/80 text-foreground',
+      className:
+        'not-dark:bg-background not-dark:hover:bg-background/80 not-dark:text-foreground',
     },
   },
 ];
 
 const Footer = () => {
-  const themeClass = 'bg-foreground text-background [&_*]:border-border/30';
+  const themeClass =
+    'not-dark:bg-foreground not-dark:text-background [&_*]:not-dark:border-border/30';
 
   return (
     <footer className={cn('overflow-hidden', themeClass)}>
@@ -74,7 +76,7 @@ const Footer = () => {
                 {plan.features.map((feature) => (
                   <li key={feature.name} className="flex items-start gap-2">
                     <span className="flex-shrink-0">{feature.icon}</span>
-                    <span className="text-muted-foreground font-medium">
+                    <span className="not-dark:text-muted-foreground font-medium">
                       {feature.name}
                     </span>
                   </li>
@@ -134,10 +136,10 @@ const Footer = () => {
               <FaXTwitter className="size-5" />
             </a>
           </div>
-          <div className="bordered-div-padding flex items-center border-t text-[#00A656] md:border-t-0">
+          <div className="bordered-div-padding flex items-center border-t not-dark:text-[#00A656] md:border-t-0">
             <span
               className={cn(
-                'me-3 h-2 w-2 animate-pulse rounded-full bg-[#00A656]',
+                'me-3 h-2 w-2 animate-pulse rounded-full not-dark:bg-[#00A656]',
               )}
             ></span>
             <span className="font-medium">Waiting for jobs 🤙</span>
