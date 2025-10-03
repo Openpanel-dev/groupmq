@@ -87,7 +87,7 @@ describe('Retry Behavior Tests', () => {
     worker.run();
 
     // Wait for all attempts
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     expect(attempts.length).toBe(3);
 
@@ -256,7 +256,7 @@ describe('Retry Behavior Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000)); // Longer wait for retries
+    await q.waitForEmpty();
 
     // Groups should maintain FIFO: A1(retry), A2, B1, B2(retry)
     // But groups can be processed in parallel

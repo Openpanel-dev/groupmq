@@ -50,7 +50,7 @@ describe('Edge Cases and Error Handling Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000)); // More time for processing
+    await q.waitForEmpty(); // More time for processing
 
     expect(processed.length).toBe(testCases.length);
 
@@ -98,7 +98,7 @@ describe('Edge Cases and Error Handling Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     expect(processedData).not.toBeNull();
     expect(processedData.id).toBe('large-payload');
@@ -210,7 +210,7 @@ describe('Edge Cases and Error Handling Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     // With graceful JSON parsing, corrupted job should be processed with null payload
     expect(processed.length).toBe(1);
@@ -302,7 +302,7 @@ describe('Edge Cases and Error Handling Tests', () => {
     });
 
     finalWorker.run();
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
     await finalWorker.close();
 
     // All jobs should eventually be processed

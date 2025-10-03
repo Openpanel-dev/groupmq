@@ -256,7 +256,7 @@ describe('Stress and Performance Degradation Tests', () => {
       await Promise.all(burstPromises);
 
       // Wait for burst to be processed
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await q.waitForEmpty();
 
       // Quiet period
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -388,13 +388,7 @@ describe('Stress and Performance Degradation Tests', () => {
       worker.run();
     }
 
-    // Wait for processing
-    while (
-      processed.length < totalJobs &&
-      Date.now() - processingStartTime < 60000
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
+    await q.waitForEmpty();
 
     expect(processed.length).toBe(totalJobs);
 

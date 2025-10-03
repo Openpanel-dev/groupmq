@@ -72,8 +72,7 @@ describe('Delay Jobs Tests', () => {
       data: { id: 'immediate-job' },
     });
 
-    // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await queue.waitForEmpty();
 
     await worker.close();
 
@@ -120,7 +119,7 @@ describe('Delay Jobs Tests', () => {
     });
 
     // Wait for processing (increased for scheduler + delay + processing)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await queue.waitForEmpty();
 
     await worker.close();
 
@@ -238,7 +237,7 @@ describe('Delay Jobs Tests', () => {
     });
 
     // Wait for processing (increased for scheduler + delays + processing)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await queue.waitForEmpty();
 
     await worker.close();
 

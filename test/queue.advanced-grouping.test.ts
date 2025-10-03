@@ -23,7 +23,7 @@ describe('Advanced Grouping Tests', () => {
     await redis.quit();
   });
 
-  it.only('should process groups in FIFO order with proper worker distribution', async () => {
+  it('should process groups in FIFO order with proper worker distribution', async () => {
     const processingLog: Array<{
       workerId: string;
       groupId: string;

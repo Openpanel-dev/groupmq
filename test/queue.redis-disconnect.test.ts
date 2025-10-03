@@ -211,8 +211,7 @@ describe('Redis Disconnect/Reconnect Tests', () => {
 
     worker.run();
 
-    // Wait for processing and recovery
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     // Job 1 should be retried after visibility timeout expires
     // Job 2 should be processed normally

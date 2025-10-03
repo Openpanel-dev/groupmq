@@ -1248,15 +1248,29 @@ return 1
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeoutMs) {
-      // Single atomic Lua script checks all queue structures
-      const isEmpty = await evalScript<number>(this.r, 'is-empty', [this.ns]);
+      try {
+        // Single atomic Lua script checks all queue structures
+        const isEmpty = await evalScript<number>(this.r, 'is-empty', [this.ns]);
 
-      if (isEmpty === 1) {
-        await sleep(0);
-        return true;
+        if (isEmpty === 1) {
+          await sleep(0);
+          return true;
+        }
+
+        await sleep(200);
+      } catch (err) {
+        // Handle connection errors gracefully - Redis might be temporarily unavailable
+        if (this.isConnectionError(err)) {
+          this.logger.warn(
+            'Redis connection error in waitForEmpty, retrying...',
+          );
+          // Wait longer before retry on connection errors
+          await sleep(1000);
+          continue;
+        }
+        // For non-connection errors, rethrow
+        throw err;
       }
-
-      await sleep(200);
     }
 
     return false; // Timeout reached

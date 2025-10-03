@@ -110,8 +110,7 @@ describe('Cron Jobs Tests', () => {
 
     expect(cronJob.id).toContain('repeat:');
 
-    // Wait for the job to be scheduled (it should be delayed to next minute)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await queue.waitForEmpty();
 
     await worker.close();
 

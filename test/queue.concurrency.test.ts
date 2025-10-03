@@ -112,7 +112,7 @@ describe('Concurrency and Race Condition Tests', () => {
     await Promise.all(producers);
 
     // Wait for processing to complete
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     expect(processed.length).toBe(30);
     expect(enqueued.length).toBe(30);
@@ -165,7 +165,7 @@ describe('Concurrency and Race Condition Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await q.waitForEmpty();
 
     // Each job should be completed exactly once
     expect(completed.length).toBe(10);
