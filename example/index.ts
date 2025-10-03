@@ -18,6 +18,7 @@ const run = async () => {
   const queue = new Queue<{
     id: string;
     jobShouldTakeThisLongMs: number;
+    groupId: string;
   }>({
     redis: redis,
     namespace: 'example',
@@ -28,6 +29,7 @@ const run = async () => {
   const cronQueue = new Queue<{
     id: string;
     jobShouldTakeThisLongMs: number;
+    groupId: string;
   }>({
     redis: redis,
     namespace: 'cron',
@@ -36,6 +38,7 @@ const run = async () => {
   });
 
   const worker = new Worker({
+    concurrency: 2,
     queue: queue,
     async handler(job) {
       await sleep(job.data.jobShouldTakeThisLongMs);
@@ -63,9 +66,6 @@ const run = async () => {
 
   workers.forEach((worker) => {
     worker.on('completed', (job) => {
-      // console.log('job completed', job.id, {
-      //   elapsed: job.finishedOn! - job.processedOn!,
-      // });
       const completedAt = Date.now();
       const addedAt = job.timestamp;
       const processedOn = job.processedOn;
@@ -123,25 +123,49 @@ const run = async () => {
     data: {
       id: Math.random().toString(36).substring(2, 15),
       jobShouldTakeThisLongMs: Math.random() * 1000,
+      groupId: 'groupId',
     },
     groupId: 'groupId',
     repeat: { every: 5000 }, // every 5 seconds
   });
 
   // Add basic job every 2.5 seconds
-  const groups = ['groupId', 'groupId2', 'groupId3', 'groupId4', 'groupId5'];
+  const groups = [
+    ...new Array(25).fill(null).map((_, i) => `groupId_${i + 1}`),
+  ];
   setInterval(async () => {
-    const groupId = groups[Math.floor(Math.random() * groups.length)];
-    console.log('adding job regular job', groupId);
-
+    const groupId = groups[Math.floor(Math.random() * groups.length)]!;
     await queue.add({
       data: {
         id: Math.random().toString(36).substring(2, 15),
         jobShouldTakeThisLongMs: Math.random() * 1000,
+        groupId,
       },
       groupId,
     });
   }, 1_000);
+
+  app.get('/add', async (c) => {
+    const groups = [
+      ...new Array(25).fill(null).map((_, i) => `groupId_${i + 1}`),
+    ];
+    const events = [
+      ...new Array(50).fill(null).map((_, i) => `event_${i + 1}`),
+    ];
+    for (const event of events) {
+      const groupId = groups[Math.floor(Math.random() * groups.length)]!;
+      await queue.add({
+        data: {
+          id: event,
+          jobShouldTakeThisLongMs: Math.random() * 500 + 500,
+          groupId,
+        },
+        groupId,
+      });
+    }
+
+    return c.json({ message: `${events.length} jobs added` });
+  });
 
   showRoutes(app);
 
