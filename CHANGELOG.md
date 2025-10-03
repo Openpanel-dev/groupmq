@@ -1,3 +1,10 @@
+## [1.0.0-next.10](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.9...v1.0.0-next.10) (2025-10-03)
+
+
+### Bug Fixes
+
+* errors in bullboard adapater ([f017602](https://github.com/Openpanel-dev/groupmq/commit/f017602019ffdd028b535e7b2885b2705ef7fe5d))
+
 ## [1.0.0-next.9](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.8...v1.0.0-next.9) (2025-10-03)
 
 
