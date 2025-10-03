@@ -1,6 +1,18 @@
-# GroupMQ - Redis Group Queue
 
-A fast, reliable Redis-backed per-group FIFO queue for Node + TypeScript with guaranteed job ordering and parallel processing across groups.
+<p align="center">
+  <img src="website/public/favicon/web-app-manifest-512x512.png" width="200px" height="200px" />
+	<h1 align="center"><b>GroupMQ - Redis Group Queue</b></h1>
+<p align="center">
+    A fast, reliable Redis-backed per-group FIFO queue for Node + TypeScript with guaranteed job ordering and parallel processing across groups.
+    <br />
+    <br />
+    <a href="https://openpanel-dev.github.io/groupmq/">Website</a>
+    ·
+    <a href="https://openpanel.dev">Created by OpenPanel.dev</a>
+  </p>
+  <br />
+  <br />
+</p>
 
 ## Install
 
