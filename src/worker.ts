@@ -246,7 +246,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     const maxConnectionRetries = 5;
 
     // BullMQ-style async queue for clean promise management
-    const asyncFifoQueue = new AsyncFifoQueue<void | ReservedJob<T>>(true);
+    const asyncFifoQueue = new AsyncFifoQueue<void | ReservedJob<T> | null>(
+      true,
+    );
 
     while (!this.stopping || asyncFifoQueue.numTotal() > 0) {
       try {
@@ -326,7 +328,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         }
 
         // Phase 2: Wait for a job to become available from the queue
-        let job: ReservedJob<T> | void;
+        let job: ReservedJob<T> | void | null;
         do {
           job = await asyncFifoQueue.fetch();
         } while (!job && asyncFifoQueue.numQueued() > 0);
@@ -513,25 +515,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   /**
-   * Read remaining delay for a job from Redis and return it in milliseconds
-   */
-  private async getDelayMs(jobId: string): Promise<number | undefined> {
-    try {
-      const jobKey = `${this.q.namespace}:job:${jobId}`;
-      const val = await this.q.redis.hget(jobKey, 'delayUntil');
-      if (!val) return undefined;
-      const delayUntil = parseInt(val, 10);
-      const now = Date.now();
-      if (Number.isFinite(delayUntil) && delayUntil > now) {
-        return delayUntil - now;
-      }
-      return undefined;
-    } catch (_e) {
-      return undefined;
-    }
-  }
-
-  /**
    * Start monitoring for stuck worker conditions
    */
   private startStuckDetection(): void {
@@ -708,7 +691,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           Job.fromReserved(this.q, item.job, {
             processedOn: item.ts,
             finishedOn: nowWall,
-            delayMs: await this.getDelayMs(item.job.id),
             status: 'active',
           }),
         );
@@ -823,7 +805,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           processedOn: jobStartWallTime,
           finishedOn: finishedAtWall,
           returnvalue: handlerResult,
-          delayMs: await this.getDelayMs(job.id),
           status: 'completed',
         }),
       );
@@ -876,7 +857,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             : typeof err === 'object' && err !== null
               ? (err as any).stack
               : undefined,
-        delayMs: await this.getDelayMs(job.id),
         status: 'failed',
       }),
     );
