@@ -57,18 +57,49 @@ function Navbar({ currentPage }: NavbarProps) {
   const isMenuColorInverted = isMenuOpen && isMobile;
 
   React.useEffect(() => {
-    // Get initial theme from localStorage, default to 'light' if none exists
-    const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
-    setTheme(savedTheme || 'light');
+    // Get initial theme from localStorage or system preference
+    const savedTheme = localStorage.getItem('starlight-theme') as
+      | 'light'
+      | 'dark'
+      | null;
+
+    let initialTheme: 'light' | 'dark';
+    if (savedTheme) {
+      // User has explicitly set a preference
+      initialTheme = savedTheme;
+    } else {
+      // No saved preference, use system preference
+      const prefersDark = window.matchMedia(
+        '(prefers-color-scheme: dark)',
+      ).matches;
+      initialTheme = prefersDark ? 'dark' : 'light';
+    }
+
+    setTheme(initialTheme);
 
     // Listen for theme changes
     const handleStorageChange = () => {
-      const newTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
+      const newTheme = localStorage.getItem('starlight-theme') as
+        | 'light'
+        | 'dark'
+        | null;
       if (newTheme) {
         setTheme(newTheme);
       }
     };
 
+    // Listen for system preference changes
+    const handleSystemThemeChange = (e: MediaQueryListEvent) => {
+      // Only update if user hasn't set a preference
+      const savedTheme = localStorage.getItem('starlight-theme');
+      if (!savedTheme) {
+        const newTheme = e.matches ? 'dark' : 'light';
+        setTheme(newTheme);
+      }
+    };
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    mediaQuery.addEventListener('change', handleSystemThemeChange);
     window.addEventListener('storage', handleStorageChange);
 
     // Listen for direct DOM class changes (for immediate updates)
@@ -84,6 +115,7 @@ function Navbar({ currentPage }: NavbarProps) {
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      mediaQuery.removeEventListener('change', handleSystemThemeChange);
       observer.disconnect();
     };
   }, []);

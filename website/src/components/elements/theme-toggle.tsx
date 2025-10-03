@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
-
 import { motion as m } from 'motion/react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -16,12 +15,24 @@ export function ThemeToggle({ className }: ThemeToggleProps = {}) {
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    // Get initial theme from localStorage, default to 'light' if none exists
+    // Get initial theme from localStorage or system preference
     const savedTheme = localStorage.getItem('starlight-theme') as
       | 'light'
       | 'dark'
       | null;
-    const initialTheme = savedTheme || 'light';
+
+    let initialTheme: 'light' | 'dark';
+    if (savedTheme) {
+      // User has explicitly set a preference
+      initialTheme = savedTheme;
+    } else {
+      // No saved preference, use system preference
+      const prefersDark = window.matchMedia(
+        '(prefers-color-scheme: dark)',
+      ).matches;
+      initialTheme = prefersDark ? 'dark' : 'light';
+    }
+
     setTheme(initialTheme);
     document.documentElement.classList.toggle('dark', initialTheme === 'dark');
 
@@ -36,6 +47,19 @@ export function ThemeToggle({ className }: ThemeToggleProps = {}) {
       }
     };
 
+    // Listen for system preference changes
+    const handleSystemThemeChange = (e: MediaQueryListEvent) => {
+      // Only update if user hasn't set a preference
+      const savedTheme = localStorage.getItem('starlight-theme');
+      if (!savedTheme) {
+        const newTheme = e.matches ? 'dark' : 'light';
+        setTheme(newTheme);
+        document.documentElement.classList.toggle('dark', newTheme === 'dark');
+      }
+    };
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    mediaQuery.addEventListener('change', handleSystemThemeChange);
     window.addEventListener('storage', handleStorageChange);
 
     // Listen for direct DOM class changes (for immediate updates)
@@ -51,6 +75,7 @@ export function ThemeToggle({ className }: ThemeToggleProps = {}) {
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      mediaQuery.removeEventListener('change', handleSystemThemeChange);
       observer.disconnect();
     };
   }, []);
