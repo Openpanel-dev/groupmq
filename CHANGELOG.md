@@ -1,3 +1,13 @@
+## [1.0.0-next.11](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.10...v1.0.0-next.11) (2025-10-03)
+
+
+### Bug Fixes
+
+* async fifo queue ([c94bb8c](https://github.com/Openpanel-dev/groupmq/commit/c94bb8c7769fa3ba9e26d607e827fa7ff9227666))
+* concurrency ([f4ed7be](https://github.com/Openpanel-dev/groupmq/commit/f4ed7bee1499946bc424f58fb33cc0bb6ced549f))
+* improve processOne ([3770f02](https://github.com/Openpanel-dev/groupmq/commit/3770f0221bf205e5f4c7a005c0f419184a755434))
+* remove get delay ms ([c714792](https://github.com/Openpanel-dev/groupmq/commit/c7147920a52733eecb8c6a044fa36b8e01812336))
+
 ## [1.0.0-next.10](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.9...v1.0.0-next.10) (2025-10-03)
 
 
