@@ -435,16 +435,80 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     jobsInProgress.add(inProgressItem);
 
     try {
-      const nextJob = await this.processOne(
-        job,
-        fetchNextCallback,
-        jobsInProgress,
-      );
+      const nextJob = await this.processOne(job, fetchNextCallback);
       // If processOne returns a chained job from atomic completion, return it
       // so it can be added back to asyncFifoQueue
       return nextJob;
     } finally {
       jobsInProgress.delete(inProgressItem);
+    }
+  }
+
+  /**
+   * Complete a job and try to atomically get next job from same group
+   */
+  private async completeJob(
+    job: ReservedJob<T>,
+    handlerResult: unknown,
+    fetchNextCallback?: () => boolean,
+  ): Promise<ReservedJob<T> | undefined> {
+    if (this.atomicCompletion && fetchNextCallback?.()) {
+      // Try atomic completion with next job reservation
+      try {
+        const nextJob = await this.q.completeAndReserveNext(
+          job.id,
+          job.groupId,
+        );
+        if (nextJob) {
+          this.logger.debug(
+            `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
+          );
+          return nextJob;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `CompleteAndReserveNext failed, falling back to regular complete:`,
+          err,
+        );
+        // Fallback to regular completion
+        await this.q.complete(job);
+      }
+    } else {
+      // Use regular completion (no atomic chaining)
+      await this.q.complete(job);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Record job completion for inspection
+   */
+  private async recordCompletion(
+    job: ReservedJob<T>,
+    handlerResult: unknown,
+    processedOn: number,
+    finishedOn: number,
+  ): Promise<void> {
+    try {
+      await this.q.recordCompleted(
+        { id: job.id, groupId: job.groupId },
+        handlerResult,
+        {
+          processedOn,
+          finishedOn,
+          attempts: job.attempts,
+          maxAttempts: job.maxAttempts,
+          data: job.data,
+        },
+      );
+    } catch (e) {
+      // Always log this error, even if logger is disabled
+      console.error(
+        `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
+        e,
+      );
+      this.logger.warn('Failed to record completion', e);
     }
   }
 
@@ -639,19 +703,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       // Emit graceful-timeout event for each job still processing
       const nowWall = Date.now();
       for (const item of this.jobsInProgress) {
-        const processingTime = nowWall - item.ts;
-        let delayMs: number | undefined;
-        try {
-          delayMs = await this.getDelayMs(item.job.id);
-        } catch (_e) {
-          // ignore
-        }
         this.emit(
           'graceful-timeout',
           Job.fromReserved(this.q, item.job, {
             processedOn: item.ts,
             finishedOn: nowWall,
-            delayMs,
+            delayMs: await this.getDelayMs(item.job.id),
             status: 'active',
           }),
         );
@@ -726,7 +783,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private async processOne(
     job: ReservedJob<T>,
     fetchNextCallback?: () => boolean,
-    jobsInProgress?: Set<{ job: ReservedJob<T>; ts: number }>,
   ): Promise<void | ReservedJob<T>> {
     const jobStartWallTime = Date.now();
 
@@ -747,202 +803,184 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     };
 
     try {
+      // Execute the user's handler
       startHeartbeat();
       const handlerResult = await this.handler(job);
       clearInterval(hbTimer!);
 
-      // Try to atomically complete this job and reserve the next one from the same group
-      // This prevents race conditions where other workers steal subsequent jobs
-      let nextJob: any = null;
-      let _jobCompleted = false;
+      // Complete the job and optionally get next job from same group
+      const nextJob = await this.completeJob(
+        job,
+        handlerResult,
+        fetchNextCallback,
+      );
 
-      if (this.atomicCompletion) {
-        try {
-          nextJob = await this.q.completeAndReserveNext(job.id, job.groupId);
-          _jobCompleted = true; // If we reach here, the job was completed atomically
-        } catch (err) {
-          this.logger.warn(
-            `CompleteAndReserveNext failed, falling back to regular complete:`,
-            err,
-          );
-          // Fallback to regular completion
-          await this.q.complete(job);
-          _jobCompleted = true;
-        }
-      } else {
-        // Use regular completion (no atomic chaining)
-        await this.q.complete(job);
-        _jobCompleted = true;
-      }
-
-      // Timing for completed event
+      // Emit completed event
       const finishedAtWall = Date.now();
-      let delayMs: number | undefined;
-      try {
-        delayMs = await this.getDelayMs(job.id);
-      } catch (_e) {
-        // ignore
-      }
-
       this.emit(
         'completed',
         Job.fromReserved(this.q, job, {
           processedOn: jobStartWallTime,
           finishedOn: finishedAtWall,
           returnvalue: handlerResult,
-          delayMs,
+          delayMs: await this.getDelayMs(job.id),
           status: 'completed',
         }),
       );
-      // Persist completion for inspection
-      try {
-        await this.q.recordCompleted(
-          { id: job.id, groupId: job.groupId },
-          handlerResult,
-          {
-            processedOn: jobStartWallTime,
-            finishedOn: finishedAtWall,
-            attempts: job.attempts,
-            maxAttempts: job.maxAttempts,
-            data: job.data,
-          },
-        );
-      } catch (e) {
-        // Always log this error, even if logger is disabled
-        console.error(
-          `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
-          e,
-        );
-        this.logger.warn('Failed to record completion', e);
-      }
 
-      // If we got a next job from the same group, return it to be added to asyncFifoQueue
-      // This allows proper tracking and maintains FIFO order
-      if (this.atomicCompletion && nextJob && fetchNextCallback?.()) {
-        this.logger.debug(
-          `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
-        );
-        // Return the chained job to be processed via asyncFifoQueue
-        return nextJob;
-      }
-
-      // If no next job or no capacity, return undefined
-    } catch (err) {
-      clearInterval(hbTimer!);
-      this.onError?.(err, job);
-
-      // Safely emit error event - don't let emit errors break retry logic
-      try {
-        this.emit('error', err instanceof Error ? err : new Error(String(err)));
-      } catch (_emitError) {
-        // Silently ignore emit errors to prevent breaking retry logic
-      }
-
-      // Create a job-like object with accurate timing in milliseconds for failed event
-      const failedAt = Date.now();
-      const failedJob = {
-        ...job,
-        failedReason: err instanceof Error ? err.message : String(err),
-        processedOn: jobStartWallTime,
-        finishedOn: failedAt,
-        data: job.data,
-        opts: {
-          attempts: job.maxAttempts,
-        },
-      };
-
-      let delayMs: number | undefined;
-      try {
-        delayMs = await this.getDelayMs(job.id);
-      } catch (_e) {
-        // ignore
-      }
-      this.emit(
-        'failed',
-        Job.fromReserved(this.q, job, {
-          processedOn: jobStartWallTime,
-          finishedOn: failedAt,
-          failedReason: failedJob.failedReason,
-          stacktrace:
-            err instanceof Error
-              ? err.stack
-              : typeof err === 'object' && err !== null
-                ? (err as any).stack
-                : undefined,
-          delayMs,
-          status: 'failed',
-        }),
+      // Record completion for inspection
+      await this.recordCompletion(
+        job,
+        handlerResult,
+        jobStartWallTime,
+        finishedAtWall,
       );
 
-      // enforce attempts at worker level too (job-level enforced by Redis)
-      const nextAttempt = job.attempts + 1; // after qRetry increment this becomes current
-      const backoffMs = this.backoff(nextAttempt);
+      // Return chained job if available and we have capacity
+      return nextJob;
+    } catch (err) {
+      clearInterval(hbTimer!);
+      await this.handleJobFailure(err, job, jobStartWallTime);
+    }
+  }
 
-      if (nextAttempt >= this.maxAttempts) {
-        this.logger.info(
-          `Dead lettering job ${job.id} from group ${job.groupId} (worker maxAttempts: ${this.maxAttempts}, job attempts: ${job.attempts})`,
-        );
-        // Record final failure before dead-lettering
-        try {
-          const errObj = err instanceof Error ? err : new Error(String(err));
-          await this.q.recordFinalFailure(
-            { id: job.id, groupId: job.groupId },
-            { name: errObj.name, message: errObj.message, stack: errObj.stack },
-            {
-              processedOn: jobStartWallTime,
-              finishedOn: failedAt,
-              attempts: nextAttempt,
-              maxAttempts: job.maxAttempts,
-              data: job.data,
-            },
-          );
-        } catch (e) {
-          this.logger.warn('Failed to record final failure', e);
-        }
-        await this.q.deadLetter(job.id, job.groupId);
-        return;
-      }
+  /**
+   * Handle job failure: emit events, retry or dead-letter
+   */
+  private async handleJobFailure(
+    err: unknown,
+    job: ReservedJob<T>,
+    jobStartWallTime: number,
+  ): Promise<void> {
+    this.onError?.(err, job);
 
-      // Retry immediately to re-add to group and lock it with backoff (prevents overtaking)
-      const retryResult = await this.q.retry(job.id, backoffMs);
-      if (retryResult === -1) {
-        // Queue-level max attempts exceeded; record final failure and dead-letter
-        try {
-          const errObj = err instanceof Error ? err : new Error(String(err));
-          await this.q.recordFinalFailure(
-            { id: job.id, groupId: job.groupId },
-            { name: errObj.name, message: errObj.message, stack: errObj.stack },
-            {
-              processedOn: jobStartWallTime,
-              finishedOn: failedAt,
-              attempts: job.maxAttempts,
-              maxAttempts: job.maxAttempts,
-              data: job.data,
-            },
-          );
-        } catch (e) {
-          this.logger.warn('Failed to record final failure', e);
-        }
-        await this.q.deadLetter(job.id, job.groupId);
-        return;
-      }
+    // Safely emit error event
+    try {
+      this.emit('error', err instanceof Error ? err : new Error(String(err)));
+    } catch (_emitError) {
+      // Silently ignore emit errors
+    }
 
-      // Persist last failure attempt info after retry is secured
-      try {
-        const errObj = err instanceof Error ? err : new Error(String(err));
-        await this.q.recordAttemptFailure(
-          { id: job.id, groupId: job.groupId },
-          { name: errObj.name, message: errObj.message, stack: errObj.stack },
-          {
-            processedOn: jobStartWallTime,
-            finishedOn: failedAt,
-            attempts: nextAttempt,
-            maxAttempts: job.maxAttempts,
-          },
-        );
-      } catch (e) {
-        this.logger.warn('Failed to record attempt failure', e);
-      }
+    const failedAt = Date.now();
+
+    // Emit failed event
+    this.emit(
+      'failed',
+      Job.fromReserved(this.q, job, {
+        processedOn: jobStartWallTime,
+        finishedOn: failedAt,
+        failedReason: err instanceof Error ? err.message : String(err),
+        stacktrace:
+          err instanceof Error
+            ? err.stack
+            : typeof err === 'object' && err !== null
+              ? (err as any).stack
+              : undefined,
+        delayMs: await this.getDelayMs(job.id),
+        status: 'failed',
+      }),
+    );
+
+    // Calculate next attempt and backoff
+    const nextAttempt = job.attempts + 1;
+    const backoffMs = this.backoff(nextAttempt);
+
+    // Check if we should dead-letter (max attempts reached)
+    if (nextAttempt >= this.maxAttempts) {
+      await this.deadLetterJob(
+        err,
+        job,
+        jobStartWallTime,
+        failedAt,
+        nextAttempt,
+      );
+      return;
+    }
+
+    // Retry the job
+    const retryResult = await this.q.retry(job.id, backoffMs);
+    if (retryResult === -1) {
+      // Queue-level max attempts exceeded
+      await this.deadLetterJob(
+        err,
+        job,
+        jobStartWallTime,
+        failedAt,
+        job.maxAttempts,
+      );
+      return;
+    }
+
+    // Record attempt failure
+    await this.recordFailureAttempt(
+      err,
+      job,
+      jobStartWallTime,
+      failedAt,
+      nextAttempt,
+    );
+  }
+
+  /**
+   * Dead-letter a job that exceeded max attempts
+   */
+  private async deadLetterJob(
+    err: unknown,
+    job: ReservedJob<T>,
+    processedOn: number,
+    finishedOn: number,
+    attempts: number,
+  ): Promise<void> {
+    this.logger.info(
+      `Dead lettering job ${job.id} from group ${job.groupId} (attempts: ${attempts}/${job.maxAttempts})`,
+    );
+
+    const errObj = err instanceof Error ? err : new Error(String(err));
+
+    try {
+      await this.q.recordFinalFailure(
+        { id: job.id, groupId: job.groupId },
+        { name: errObj.name, message: errObj.message, stack: errObj.stack },
+        {
+          processedOn,
+          finishedOn,
+          attempts,
+          maxAttempts: job.maxAttempts,
+          data: job.data,
+        },
+      );
+    } catch (e) {
+      this.logger.warn('Failed to record final failure', e);
+    }
+
+    await this.q.deadLetter(job.id, job.groupId);
+  }
+
+  /**
+   * Record a failed attempt (not final)
+   */
+  private async recordFailureAttempt(
+    err: unknown,
+    job: ReservedJob<T>,
+    processedOn: number,
+    finishedOn: number,
+    attempts: number,
+  ): Promise<void> {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+
+    try {
+      await this.q.recordAttemptFailure(
+        { id: job.id, groupId: job.groupId },
+        { name: errObj.name, message: errObj.message, stack: errObj.stack },
+        {
+          processedOn,
+          finishedOn,
+          attempts,
+          maxAttempts: job.maxAttempts,
+        },
+      );
+    } catch (e) {
+      this.logger.warn('Failed to record attempt failure', e);
     }
   }
 }
