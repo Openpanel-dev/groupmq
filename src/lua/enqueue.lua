@@ -8,7 +8,6 @@ local delayUntil = tonumber(ARGV[6])
 local jobId = ARGV[7]
 local keepCompleted = tonumber(ARGV[8]) or 0
 
-local seqKey = ns .. ":seq"
 local readyKey = ns .. ":ready"
 local delayedKey = ns .. ":delayed"
 local jobKey = ns .. ":job:" .. jobId
@@ -78,6 +77,9 @@ end
 local baseEpoch = 1704067200000
 local relativeMs = orderMs - baseEpoch
 
+-- Use date-based sequence key to auto-reset daily (prevents max int overflow)
+local daysSinceEpoch = math.floor(orderMs / 86400000)
+local seqKey = ns .. ":seq:" .. daysSinceEpoch
 local seq = redis.call("INCR", seqKey)
 local score = relativeMs * 1000 + seq
 
