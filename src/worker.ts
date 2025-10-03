@@ -1,4 +1,4 @@
-import { performance } from 'node:perf_hooks';
+import { AsyncFifoQueue } from './async-fifo-queue';
 import { Job } from './job';
 import { Logger, type LoggerInterface } from './logger';
 import type { AddOptions, Queue, ReservedJob } from './queue';
@@ -116,12 +116,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private schedulerMs: number;
   private blockingTimeoutSec: number;
   private atomicCompletion: boolean;
-  private currentJob: ReservedJob<T> | null = null;
-  private processingStartTime = 0;
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
-  private inFlightJobs = new Set<string>();
-  private inFlightPromises = new Set<Promise<void>>();
+
+  // Track all jobs in progress (for all concurrency levels)
+  private jobsInProgress = new Set<{ job: ReservedJob<T>; ts: number }>();
 
   // Blocking detection and monitoring
   private lastJobPickupTime = 0;
@@ -162,12 +161,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
     this.schedulerMs = opts.schedulerIntervalMs ?? 1000;
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s like BullMQ's drainDelay
-    // Disable atomic completion for concurrency > 1 to avoid race conditions
-    // With concurrency > 1, the chained job from completeAndReserveNext can't be properly tracked
-    const requestedConcurrency = Math.max(1, opts.concurrency ?? 1);
-    this.atomicCompletion =
-      requestedConcurrency === 1 && (opts.atomicCompletion ?? true);
-    this.concurrency = requestedConcurrency;
+    // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
+    this.atomicCompletion = opts.atomicCompletion ?? true;
+    this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
@@ -249,126 +245,110 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let connectionRetries = 0;
     const maxConnectionRetries = 5;
 
-    let inFlight = 0;
+    // BullMQ-style async queue for clean promise management
+    const asyncFifoQueue = new AsyncFifoQueue<void | ReservedJob<T>>(true);
 
-    while (!this.stopping) {
-      const loopStartTime = Date.now();
-
+    while (!this.stopping || asyncFifoQueue.numTotal() > 0) {
       try {
-        this.blockingStats.totalBlockingCalls++;
-        const blockingStartTime = Date.now();
+        // Phase 1: Fetch jobs sequentially until we reach concurrency capacity
+        while (!this.stopping && asyncFifoQueue.numTotal() < this.concurrency) {
+          this.blockingStats.totalBlockingCalls++;
 
-        this.logger.debug(
-          `Attempting to reserve job (call #${this.blockingStats.totalBlockingCalls})...`,
-        );
+          this.logger.debug(
+            `Fetching job (call #${this.blockingStats.totalBlockingCalls}, queue: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
+          );
 
-        // If we have capacity and concurrency > 1, try to get a batch first (low latency, fewer round trips)
-        const capacity = Math.max(0, this.concurrency - inFlight);
-        if (capacity > 1 && this.concurrency > 1) {
-          try {
-            const batch = await this.q.reserveBatch(Math.min(32, capacity));
-            if (batch.length > 0) {
-              for (const job of batch) {
-                // Check if stopping between batch processing
-                if (this.stopping) break;
-                this.totalJobsProcessed++;
-                inFlight++;
-                this.inFlightJobs.add(job.id);
-                const promise = this.processOne(job)
-                  .catch((err) => this.logger.error('ProcessOne fatal:', err))
-                  .finally(() => {
-                    inFlight--;
-                    this.inFlightJobs.delete(job.id);
-                    this.inFlightPromises.delete(promise);
-                    this.blockingStats.lastActivityTime = Date.now();
-                  });
-                this.inFlightPromises.add(promise);
-              }
-              // Quickly iterate again to try fill remaining capacity
-              continue;
-            }
-          } catch (e) {
-            this.logger.warn(
-              'reserveBatch error, falling back to blocking:',
-              e,
+          const fetchedJob = this.retryIfFailed(
+            () =>
+              this.q.reserveBlocking(
+                this.blockingTimeoutSec,
+                blockUntil,
+                this.blockingClient ?? undefined,
+              ),
+            this.delay.bind(this),
+          );
+
+          asyncFifoQueue.add(fetchedJob);
+
+          // Sequential fetching: wait for this fetch before next (prevents thundering herd)
+          const job = await fetchedJob;
+
+          if (job) {
+            // Reset connection retry count and empty reserves
+            connectionRetries = 0;
+            blockUntil = 0;
+            this.lastJobPickupTime = Date.now();
+            this.blockingStats.consecutiveEmptyReserves = 0;
+            this.blockingStats.lastActivityTime = Date.now();
+
+            this.logger.debug(
+              `Fetched job ${job.id} from group ${job.groupId}`,
             );
+          } else {
+            // No more jobs available
+            this.blockingStats.consecutiveEmptyReserves++;
+
+            this.logger.debug(
+              `No job available (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
+            );
+
+            // Log warning if too many consecutive empty reserves
+            if (
+              this.blockingStats.consecutiveEmptyReserves % 100 === 0 &&
+              this.shouldWarnAboutEmptyReserves()
+            ) {
+              this.logger.warn(
+                `Has had ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves - potential blocking issue!`,
+              );
+              await this.logWorkerStatus();
+            }
+
+            // Recovery for delayed groups
+            try {
+              const recovered = await this.q.recoverDelayedGroups();
+              if (recovered > 0) {
+                this.logger.debug(`Recovered ${recovered} delayed groups`);
+              }
+            } catch (err) {
+              this.logger.warn(`Recovery error:`, err);
+            }
+
+            // No more jobs, break fetch loop if we have jobs processing
+            if (asyncFifoQueue.numTotal() > 1) {
+              break;
+            }
+          }
+
+          // Break if blockUntil is set to avoid waiting during processing
+          if (blockUntil) {
+            break;
           }
         }
 
-        // Enhanced blocking with BullMQ-style connection management
-        const job = await this.q.reserveBlocking(
-          this.blockingTimeoutSec,
-          blockUntil,
-          this.blockingClient ?? undefined,
-        );
-
-        const blockingEndTime = Date.now();
-        const blockingDuration = blockingEndTime - blockingStartTime;
-        this.blockingStats.totalBlockingTimeMs += blockingDuration;
+        // Phase 2: Wait for a job to become available from the queue
+        let job: ReservedJob<T> | void;
+        do {
+          job = await asyncFifoQueue.fetch();
+        } while (!job && asyncFifoQueue.numQueued() > 0);
 
         if (job) {
-          // Reset connection retry count on successful job pickup
-          connectionRetries = 0;
-          blockUntil = 0; // Reset blockUntil after successful job
+          this.totalJobsProcessed++;
 
-          this.lastJobPickupTime = Date.now();
-          this.blockingStats.consecutiveEmptyReserves = 0;
-          this.blockingStats.lastActivityTime = Date.now();
+          // Process the job (may return chained job from atomic completion)
+          const processingPromise = this.retryIfFailed(
+            () =>
+              this.processJob(
+                job!,
+                () => asyncFifoQueue.numTotal() <= this.concurrency,
+                this.jobsInProgress,
+              ),
+            this.delay.bind(this),
+          ).then((chainedJob) => {
+            // If atomic completion returned a chained job, return it as the result
+            return chainedJob;
+          });
 
-          this.logger.debug(
-            `Picked up job ${job.id} from group ${job.groupId} (took ${blockingDuration}ms)`,
-          );
-
-          if (this.concurrency > 1) {
-            this.totalJobsProcessed++;
-            inFlight++;
-            this.inFlightJobs.add(job.id);
-            const promise = this.processOne(job)
-              .catch((err) => this.logger.error('ProcessOne fatal:', err))
-              .finally(() => {
-                inFlight--;
-                this.inFlightJobs.delete(job.id);
-                this.inFlightPromises.delete(promise);
-                this.blockingStats.lastActivityTime = Date.now();
-              });
-            this.inFlightPromises.add(promise);
-          } else {
-            this.totalJobsProcessed++;
-            this.inFlightJobs.add(job.id);
-            await this.processOne(job).catch((err) => {
-              this.logger.error(`ProcessOne fatal:`, err);
-            });
-            this.inFlightJobs.delete(job.id);
-          }
-        } else {
-          // No job available
-          this.blockingStats.consecutiveEmptyReserves++;
-
-          this.logger.debug(
-            `No job available (blocking took ${blockingDuration}ms, consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
-          );
-
-          // Log warning if too many consecutive empty reserves (but only if we've processed jobs before and queue seems to have work)
-          if (
-            this.blockingStats.consecutiveEmptyReserves % 100 === 0 &&
-            this.shouldWarnAboutEmptyReserves()
-          ) {
-            this.logger.warn(
-              `Has had ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves - potential blocking issue!`,
-            );
-            await this.logWorkerStatus();
-          }
-
-          // Recovery for delayed groups
-          // Note: runSchedulerOnce() is handled by the background scheduler timer
-          try {
-            const recovered = await this.q.recoverDelayedGroups();
-            if (recovered > 0) {
-              this.logger.debug(`Recovered ${recovered} delayed groups`);
-            }
-          } catch (err) {
-            this.logger.warn(`Recovery error:`, err);
-          }
+          asyncFifoQueue.add(processingPromise);
         }
       } catch (err) {
         // Distinguish between connection errors (retry) and other errors (log and continue)
@@ -420,12 +400,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
         this.onError?.(err);
       }
-
-      const loopDuration = Date.now() - loopStartTime;
-      if (loopDuration > 10000) {
-        // Log if a single loop takes more than 10 seconds
-        this.logger.warn(`Slow loop detected: ${loopDuration}ms`);
-      }
     }
 
     this.logger.info(`Stopped`);
@@ -433,6 +407,45 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   private async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async retryIfFailed<T>(
+    fn: () => Promise<T>,
+    delayFn: (ms: number) => Promise<void>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      // Don't emit here - let AsyncFifoQueue handle it with ignoreErrors
+      // The error will be logged at a higher level if needed
+      throw err;
+    }
+  }
+
+  /**
+   * Process a job and return the next job if atomic completion succeeds
+   * This matches BullMQ's processJob signature
+   */
+  private async processJob(
+    job: ReservedJob<T>,
+    fetchNextCallback: () => boolean,
+    jobsInProgress: Set<{ job: ReservedJob<T>; ts: number }>,
+  ): Promise<void | ReservedJob<T>> {
+    const inProgressItem = { job, ts: Date.now() };
+    jobsInProgress.add(inProgressItem);
+
+    try {
+      const nextJob = await this.processOne(
+        job,
+        fetchNextCallback,
+        jobsInProgress,
+      );
+      // If processOne returns a chained job from atomic completion, return it
+      // so it can be added back to asyncFifoQueue
+      return nextJob;
+    } finally {
+      jobsInProgress.delete(inProgressItem);
+    }
   }
 
   /**
@@ -553,22 +566,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         `  📈 Queue Stats: Active=${queueStats.active}, Waiting=${queueStats.waiting}, Delayed=${queueStats.delayed}, Groups=${uniqueGroupsCount}`,
       );
       this.logger.info(
-        `  🔄 Currently Processing: ${this.currentJob?.id || 'none'}`,
+        `  🔄 Currently Processing: ${this.jobsInProgress.size} jobs`,
       );
-      this.logger.info(
-        `  ⚡ In-Flight Jobs (concurrency=${this.concurrency}): ${this.inFlightJobs.size} active`,
-      );
-      if (this.inFlightJobs.size > 0) {
-        this.logger.info(
-          `  📋 In-Flight Job IDs: ${Array.from(this.inFlightJobs).join(', ')}`,
-        );
-      }
-
-      if (this.currentJob) {
-        const processingTime = now - this.processingStartTime;
-        this.logger.info(
-          `  ⚙️ Current Job Processing Time: ${Math.round(processingTime / 1000)}s`,
-        );
+      if (this.jobsInProgress.size > 0) {
+        const jobDetails = Array.from(this.jobsInProgress).map((item) => {
+          const processingTime = now - item.ts;
+          return `${item.job.id} (${Math.round(processingTime / 1000)}s)`;
+        });
+        this.logger.info(`  📋 Processing: ${jobDetails.join(', ')}`);
       }
     } catch (err) {
       this.logger.error(`Failed to log worker status:`, err);
@@ -587,12 +592,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       timeSinceLastJob:
         this.lastJobPickupTime > 0 ? now - this.lastJobPickupTime : null,
       blockingStats: { ...this.blockingStats },
-      isProcessing: this.currentJob !== null,
-      currentJobId: this.currentJob?.id || null,
-      currentJobGroupId: this.currentJob?.groupId || null,
-      currentJobProcessingTime: this.currentJob
-        ? now - this.processingStartTime
-        : 0,
+      isProcessing: this.jobsInProgress.size > 0,
+      jobsInProgressCount: this.jobsInProgress.size,
+      jobsInProgress: Array.from(this.jobsInProgress).map((item) => ({
+        jobId: item.job.id,
+        groupId: item.job.groupId,
+        processingTimeMs: now - item.ts,
+      })),
     };
   }
 
@@ -615,48 +621,35 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       clearInterval(this.stuckDetectionTimer);
     }
 
-    // Wait for all in-flight jobs to finish or timeout
+    // Note: asyncFifoQueue and jobsInProgress are local to run() method
+    // Worker loop will naturally drain when stopping = true
+    // Wait for jobs to finish
     const startTime = Date.now();
     while (
-      this.inFlightJobs.size > 0 &&
+      this.jobsInProgress.size > 0 &&
       Date.now() - startTime < gracefulTimeoutMs
     ) {
-      // For concurrency > 1, wait for promises to settle
-      if (this.inFlightPromises.size > 0) {
-        await Promise.race([
-          Promise.allSettled(Array.from(this.inFlightPromises)),
-          sleep(100),
-        ]);
-      } else {
-        // For concurrency = 1, just wait a bit
-        await sleep(100);
-      }
+      await sleep(100);
     }
 
-    if (this.inFlightJobs.size > 0) {
+    if (this.jobsInProgress.size > 0) {
       this.logger.warn(
-        `Worker stopped with ${this.inFlightJobs.size} jobs still processing after ${gracefulTimeoutMs}ms timeout. Job IDs: ${Array.from(this.inFlightJobs).join(', ')}`,
+        `Worker stopped with ${this.jobsInProgress.size} jobs still processing after ${gracefulTimeoutMs}ms timeout.`,
       );
-      // Emit graceful-timeout event for the current job if one is tracked
-      if (this.currentJob) {
-        const nowWall = Date.now();
-        const elapsedSinceStart = this.processingStartTime
-          ? performance.now() - this.processingStartTime
-          : 0;
-        const processedOnWall = Math.max(
-          0,
-          Math.floor(nowWall - elapsedSinceStart),
-        );
+      // Emit graceful-timeout event for each job still processing
+      const nowWall = Date.now();
+      for (const item of this.jobsInProgress) {
+        const processingTime = nowWall - item.ts;
         let delayMs: number | undefined;
         try {
-          delayMs = await this.getDelayMs(this.currentJob.id);
+          delayMs = await this.getDelayMs(item.job.id);
         } catch (_e) {
           // ignore
         }
         this.emit(
           'graceful-timeout',
-          Job.fromReserved(this.q, this.currentJob, {
-            processedOn: processedOnWall,
+          Job.fromReserved(this.q, item.job, {
+            processedOn: item.ts,
             finishedOn: nowWall,
             delayMs,
             status: 'active',
@@ -666,9 +659,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     }
 
     // Clear tracking
-    this.currentJob = null;
-    this.processingStartTime = 0;
-    this.inFlightJobs.clear();
+    this.jobsInProgress.clear();
     this.ready = false;
     this.closed = true;
 
@@ -692,24 +683,39 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   /**
-   * Get information about the currently processing job, if any
+   * Get information about the first currently processing job (if any)
+   * For concurrency > 1, returns the oldest job in progress
    */
   getCurrentJob(): { job: ReservedJob<T>; processingTimeMs: number } | null {
-    if (!this.currentJob) {
+    if (this.jobsInProgress.size === 0) {
       return null;
     }
 
+    // Return the oldest job (first one added to the set)
+    const oldest = Array.from(this.jobsInProgress)[0];
+    const now = Date.now();
     return {
-      job: this.currentJob,
-      processingTimeMs: performance.now() - this.processingStartTime,
+      job: oldest.job,
+      processingTimeMs: now - oldest.ts,
     };
   }
 
   /**
-   * Check if the worker is currently processing a job
+   * Get information about all currently processing jobs
+   */
+  getCurrentJobs(): Array<{ job: ReservedJob<T>; processingTimeMs: number }> {
+    const now = Date.now();
+    return Array.from(this.jobsInProgress).map((item) => ({
+      job: item.job,
+      processingTimeMs: now - item.ts,
+    }));
+  }
+
+  /**
+   * Check if the worker is currently processing any jobs
    */
   isProcessing(): boolean {
-    return this.currentJob !== null;
+    return this.jobsInProgress.size > 0;
   }
 
   // Proxy to the underlying queue.add with correct data typing inferred from the queue
@@ -717,10 +723,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return this.q.add(opts);
   }
 
-  private async processOne(job: ReservedJob<T>) {
-    // Track current job
-    this.currentJob = job;
-    this.processingStartTime = performance.now();
+  private async processOne(
+    job: ReservedJob<T>,
+    fetchNextCallback?: () => boolean,
+    jobsInProgress?: Set<{ job: ReservedJob<T>; ts: number }>,
+  ): Promise<void | ReservedJob<T>> {
     const jobStartWallTime = Date.now();
 
     let hbTimer: NodeJS.Timeout | undefined;
@@ -809,32 +816,17 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         this.logger.warn('Failed to record completion', e);
       }
 
-      // If we got a next job from the same group, process it immediately (maintaining FIFO)
-      // But DON'T chain recursively - just process this one job atomically
-      // NOTE: This should only happen with concurrency=1, as atomicCompletion is disabled for concurrency > 1
-      if (this.atomicCompletion && nextJob) {
+      // If we got a next job from the same group, return it to be added to asyncFifoQueue
+      // This allows proper tracking and maintains FIFO order
+      if (this.atomicCompletion && nextJob && fetchNextCallback?.()) {
         this.logger.debug(
           `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
         );
-
-        // Process the next job but WITHOUT atomic completion to prevent infinite chaining
-        const originalAtomicCompletion = this.atomicCompletion;
-        this.atomicCompletion = false; // Temporarily disable to prevent recursion
-
-        try {
-          await this.processOne(nextJob).catch((err) => {
-            this.logger.error(`ProcessOne (chained) fatal:`, err);
-          });
-        } finally {
-          this.atomicCompletion = originalAtomicCompletion; // Restore original setting
-        }
-
-        // After processing the chained job, return to normal competition
-        // This allows other workers to compete for subsequent jobs in this group
-        return;
+        // Return the chained job to be processed via asyncFifoQueue
+        return nextJob;
       }
 
-      // If no next job in the same group, the normal run() loop will handle getting the next job
+      // If no next job or no capacity, return undefined
     } catch (err) {
       clearInterval(hbTimer!);
       this.onError?.(err, job);
@@ -951,10 +943,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       } catch (e) {
         this.logger.warn('Failed to record attempt failure', e);
       }
-    } finally {
-      // Clear current job tracking
-      this.currentJob = null;
-      this.processingStartTime = 0;
     }
   }
 }
