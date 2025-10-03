@@ -1,5 +1,6 @@
 ---
 import { BenchmarkChart } from '@/components/benchmark/benchmark-chart';
+import { BenchmarkMetrics } from '@/components/benchmark/benchmark-metrics';
 import DefaultLayout from '@/layouts/DefaultLayout.astro';
 ---
 
@@ -7,124 +8,99 @@ import DefaultLayout from '@/layouts/DefaultLayout.astro';
   title="Performance Benchmarks | GroupMQ"
   description="Real-world performance benchmarks comparing GroupMQ and BullMQ over time"
 >
-  <div class="container mx-auto px-4 py-16 max-w-7xl">
-    <div class="mb-12">
-      <h1 class="text-4xl font-bold tracking-tight sm:text-5xl mb-4">
-        Performance Benchmarks
-      </h1>
-      <p class="text-lg text-muted-foreground max-w-3xl">
-        Real-world benchmark results comparing GroupMQ and BullMQ performance over time. All
-        benchmarks are run locally on a MacBook M2 with identical settings to ensure fair comparisons.
-      </p>
+  <section class="container">
+    <!-- Header -->
+    <div class="bordered-div-padding border-x">
+      <div class="space-y-4">
+        <h1 class="font-weight-display text-2xl leading-snug tracking-tighter md:text-3xl lg:text-4xl">
+          Performance Benchmarks
+        </h1>
+        <p class="text-muted-foreground max-w-[820px] text-sm leading-relaxed md:text-lg lg:text-xl">
+          Real-world benchmark results comparing GroupMQ and BullMQ performance over time. All
+          benchmarks are run locally on a MacBook M2 with identical settings to ensure fair comparisons.
+        </p>
+      </div>
     </div>
 
-    <BenchmarkChart client:load />
+    <!-- Chart Section -->
+    <div class="bordered-div-padding border shadow-[0_0_0_0.5px] shadow-border">
+      <BenchmarkChart client:load />
+    </div>
 
-    <div class="mt-16 space-y-12 prose prose-slate dark:prose-invert max-w-none">
-      <section>
-        <h2 class="text-2xl font-bold">Understanding the Results</h2>
+    <!-- Understanding the Results -->
+    <div class="bordered-div-padding border border-t-0">
+      <h2 class="text-2xl font-bold mb-8">Understanding the Results</h2>
+    </div>
+    
+    <BenchmarkMetrics client:load />
 
-        <div class="grid gap-6 md:grid-cols-2 not-prose mt-6">
-          <div class="rounded-lg border bg-card p-6">
-            <h3 class="text-lg font-semibold mb-2">Throughput (jobs/sec)</h3>
-            <p class="text-sm text-muted-foreground">
-              Higher throughput means more jobs can be processed per second. GroupMQ is optimized
-              for group-based processing while maintaining high throughput.
-            </p>
-          </div>
+    <!-- Benchmark Settings -->
+    <div class="bordered-div-padding border border-t-0 shadow-[0_0_0_0.5px] shadow-border">
+      <h2 class="text-2xl font-bold mb-4">Benchmark Settings</h2>
+      <p class="text-muted-foreground mb-4">All benchmarks are run with:</p>
+      <ul class="list-disc list-inside space-y-2 text-muted-foreground">
+        <li><strong>Hardware:</strong> MacBook M2 (Apple Silicon)</li>
+        <li><strong>Redis:</strong> Local Redis instance (6.2+)</li>
+        <li><strong>Node.js:</strong> Latest LTS version</li>
+        <li>
+          <strong>Job Workload:</strong> CPU-bound tasks (small computation) or I/O-bound tasks
+        </li>
+      </ul>
+    </div>
 
-          <div class="rounded-lg border bg-card p-6">
-            <h3 class="text-lg font-semibold mb-2">Pickup Time</h3>
-            <p class="text-sm text-muted-foreground">
-              This measures how quickly a worker picks up a job after it's enqueued. Lower pickup
-              times indicate better responsiveness and less queuing overhead.
-            </p>
-          </div>
+    <!-- Running Your Own Benchmarks -->
+    <div class="bordered-div-padding border border-t-0 shadow-[0_0_0_0.5px] shadow-border">
+      <h2 class="text-2xl font-bold mb-4">Running Your Own Benchmarks</h2>
+      <p class="text-muted-foreground mb-6">
+        Want to run benchmarks yourself? Use the benchmark tool included in the repository:
+      </p>
 
-          <div class="rounded-lg border bg-card p-6">
-            <h3 class="text-lg font-semibold mb-2">Processing Time</h3>
-            <p class="text-sm text-muted-foreground">
-              The actual time spent executing your job handler. This should be similar between both
-              systems as it depends on your job logic.
-            </p>
-          </div>
-
-          <div class="rounded-lg border bg-card p-6">
-            <h3 class="text-lg font-semibold mb-2">Total Time</h3>
-            <p class="text-sm text-muted-foreground">
-              End-to-end latency from when a job is added to the queue until it's completed. This
-              includes pickup time + processing time + any queue overhead.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <h2 class="text-2xl font-bold">Benchmark Settings</h2>
-        <p class="text-muted-foreground">All benchmarks are run with:</p>
-        <ul class="list-disc list-inside space-y-2 text-muted-foreground">
-          <li><strong>Hardware:</strong> MacBook M2 (Apple Silicon)</li>
-          <li><strong>Redis:</strong> Local Redis instance (6.2+)</li>
-          <li><strong>Node.js:</strong> Latest LTS version</li>
-          <li>
-            <strong>Job Workload:</strong> CPU-bound tasks (small computation) or I/O-bound tasks
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <h2 class="text-2xl font-bold">Running Your Own Benchmarks</h2>
-        <p class="text-muted-foreground">
-          Want to run benchmarks yourself? Use the benchmark tool included in the repository:
-        </p>
-
-        <div class="not-prose">
-          <pre
-            class="rounded-lg bg-muted p-4 overflow-x-auto"><code class="text-sm"># CPU-bound workload
+      <div class="not-prose mb-8">
+        <pre
+          class="rounded-lg bg-muted p-4 overflow-x-auto"><code class="text-sm"># CPU-bound workload
 npm run benchmark -- --mq groupmq --jobs 500 --workers 4 --job-type cpu --multi-process
 
 # Compare with BullMQ
 npm run benchmark -- --mq bullmq --jobs 500 --workers 4 --job-type cpu --multi-process</code></pre>
-        </div>
+      </div>
 
-        <h3 class="text-xl font-semibold mt-6">Available Options</h3>
-        <ul class="list-disc list-inside space-y-2 text-muted-foreground">
-          <li><code>--mq &lt;bullmq|groupmq&gt;</code>: Queue implementation to benchmark</li>
-          <li><code>--jobs &lt;n&gt;</code>: Number of jobs to process (default: 100)</li>
-          <li><code>--workers &lt;n&gt;</code>: Number of workers (default: 4)</li>
-          <li><code>--job-type &lt;cpu|io&gt;</code>: Type of job workload (default: cpu)</li>
-          <li><code>--multi-process</code>: Use separate processes for workers</li>
-          <li><code>--output &lt;file&gt;</code>: Save results to JSON file</li>
-        </ul>
-      </section>
-
-      <section>
-        <h2 class="text-2xl font-bold">Performance Tips</h2>
-        <p class="text-muted-foreground">Based on these benchmarks, here are some recommendations:</p>
-        <ol class="list-decimal list-inside space-y-2 text-muted-foreground">
-          <li>
-            <strong>Use multi-process workers</strong> for CPU-bound workloads to leverage multiple
-            cores
-          </li>
-          <li>
-            <strong>Adjust worker count</strong> based on your workload - more workers aren't always
-            better
-          </li>
-          <li>
-            <strong>Monitor pickup times</strong> - high pickup times may indicate too many
-            concurrent jobs
-          </li>
-          <li><strong>Consider batching</strong> for high-throughput scenarios</li>
-        </ol>
-
-        <p class="text-muted-foreground mt-4">
-          For more optimization strategies, see our{' '}
-          <a href="/groupmq/performance-tips" class="text-primary hover:underline"
-            >Performance Tips</a
-          > guide.
-        </p>
-      </section>
+      <h3 class="text-xl font-semibold mb-4">Available Options</h3>
+      <ul class="list-disc list-inside space-y-2 text-muted-foreground">
+        <li><code>--mq &lt;bullmq|groupmq&gt;</code>: Queue implementation to benchmark</li>
+        <li><code>--jobs &lt;n&gt;</code>: Number of jobs to process (default: 100)</li>
+        <li><code>--workers &lt;n&gt;</code>: Number of workers (default: 4)</li>
+        <li><code>--job-type &lt;cpu|io&gt;</code>: Type of job workload (default: cpu)</li>
+        <li><code>--multi-process</code>: Use separate processes for workers</li>
+        <li><code>--output &lt;file&gt;</code>: Save results to JSON file</li>
+      </ul>
     </div>
-  </div>
-</DefaultLayout>
 
+    <!-- Performance Tips -->
+    <div class="bordered-div-padding border border-t-0 shadow-[0_0_0_0.5px] shadow-border">
+      <h2 class="text-2xl font-bold mb-4">Performance Tips</h2>
+      <p class="text-muted-foreground mb-4">Based on these benchmarks, here are some recommendations:</p>
+      <ol class="list-decimal list-inside space-y-2 text-muted-foreground mb-6">
+        <li>
+          <strong>Use multi-process workers</strong> for CPU-bound workloads to leverage multiple
+          cores
+        </li>
+        <li>
+          <strong>Adjust worker count</strong> based on your workload - more workers aren't always
+          better
+        </li>
+        <li>
+          <strong>Monitor pickup times</strong> - high pickup times may indicate too many
+          concurrent jobs
+        </li>
+        <li><strong>Consider batching</strong> for high-throughput scenarios</li>
+      </ol>
+
+      <p class="text-muted-foreground">
+        For more optimization strategies, see our{' '}
+        <a href="/groupmq/performance-tips" class="text-primary hover:underline"
+          >Performance Tips</a
+        > guide.
+      </p>
+    </div>
+  </section>
+</DefaultLayout>

@@ -197,6 +197,7 @@ function Navbar({ currentPage }: NavbarProps) {
                 }}
                 className={cn(
                   'fixed inset-0 top-16 z-50 container flex flex-col overflow-hidden text-sm font-medium lg:hidden',
+                  'top-26',
                   isMenuColorInverted
                     ? theme === 'dark'
                       ? 'light bg-foreground text-background'

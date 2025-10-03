@@ -17,7 +17,7 @@ const currentPath = Astro.url.pathname;
     <Tracking />
   </head>
   <body class={`min-h-screen antialiased flex flex-col relative`}>
-    <div class="bg-yellow-500 text-black text-sm font-medium p-2 text-center">
+    <div class="h-10 bg-yellow-500 text-black text-sm font-medium p-2 text-center flex justify-center items-center">
       Not production ready
     </div>
     <Navbar currentPage={currentPath} client:load />
