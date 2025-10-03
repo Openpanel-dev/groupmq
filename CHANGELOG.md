@@ -1,3 +1,12 @@
+## [1.0.0-next.9](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.8...v1.0.0-next.9) (2025-10-03)
+
+
+### Bug Fixes
+
+* flaky test (use performance.now() instead) ([ea466b9](https://github.com/Openpanel-dev/groupmq/commit/ea466b9897bfc5fd4c3120e40a5daa8584399f99))
+* replace seq counter with epoch counter ([ba38a76](https://github.com/Openpanel-dev/groupmq/commit/ba38a762593625af950cf86335aa293dba1e0856))
+* tests ([0f66afb](https://github.com/Openpanel-dev/groupmq/commit/0f66afb7cf1a6d076832348c87a349721ab88b88))
+
 ## [1.0.0-next.8](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.7...v1.0.0-next.8) (2025-10-02)
 
 
