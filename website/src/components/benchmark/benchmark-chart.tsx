@@ -107,7 +107,7 @@ export function BenchmarkChart() {
     'throughputJobsPerSec',
   );
   const [filter, setFilter] = useState<FilterConfig>({
-    jobs: 500,
+    jobs: 5000,
     workers: 4,
     jobType: 'cpu',
     multiProcess: true,
