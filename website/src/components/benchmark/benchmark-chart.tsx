@@ -383,6 +383,42 @@ export function BenchmarkChart() {
         </CardContent>
       </Card>
 
+      {/* Performance Note */}
+      {(selectedMetric === 'avgMemoryMB' ||
+        selectedMetric === 'avgCpuPercent') && (
+        <Card className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <svg
+                className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600 dark:text-amber-500"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+                  Note about resource measurements
+                </p>
+                <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+                  These benchmarks were not run on an isolated server. CPU and
+                  memory measurements may be affected by other system processes
+                  and should be taken with a grain of salt. They provide
+                  relative comparisons rather than absolute performance
+                  guarantees.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Statistics */}
       {chartData.length > 0 && (
         <div className="grid gap-6 md:grid-cols-2">
