@@ -688,10 +688,30 @@ return 1
     const completedKey = `${this.ns}:completed`;
     const ids = await this.r.zrevrange(completedKey, 0, Math.max(0, limit - 1));
     if (ids.length === 0) return [];
-    const jobs: Array<JobEntity<T>> = [];
+
+    // Atomically fetch all job hashes in one pipeline
+    const pipe = this.r.multi();
     for (const id of ids) {
-      const j = await this.getJob(id);
-      if (j) jobs.push(j);
+      pipe.hgetall(`${this.ns}:job:${id}`);
+    }
+    const rows = await pipe.exec();
+
+    // Construct jobs directly from pipeline data (atomic, no race condition)
+    const jobs: Array<JobEntity<T>> = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const raw = (rows?.[i]?.[1] as Record<string, string>) || {};
+
+      // Skip jobs that were already cleaned up
+      if (!raw || Object.keys(raw).length === 0) {
+        this.logger.warn(
+          `Skipping completed job ${id} - not found (likely cleaned up)`,
+        );
+        continue;
+      }
+
+      const job = JobEntity.fromRawHash<T>(this, id, raw, 'completed');
+      jobs.push(job);
     }
     return jobs;
   }
@@ -703,10 +723,30 @@ return 1
     const failedKey = `${this.ns}:failed`;
     const ids = await this.r.zrevrange(failedKey, 0, Math.max(0, limit - 1));
     if (ids.length === 0) return [];
-    const jobs: Array<JobEntity<T>> = [];
+
+    // Atomically fetch all job hashes in one pipeline
+    const pipe = this.r.multi();
     for (const id of ids) {
-      const j = await this.getJob(id);
-      if (j) jobs.push(j);
+      pipe.hgetall(`${this.ns}:job:${id}`);
+    }
+    const rows = await pipe.exec();
+
+    // Construct jobs directly from pipeline data (atomic, no race condition)
+    const jobs: Array<JobEntity<T>> = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const raw = (rows?.[i]?.[1] as Record<string, string>) || {};
+
+      // Skip jobs that were already cleaned up
+      if (!raw || Object.keys(raw).length === 0) {
+        this.logger.warn(
+          `Skipping failed job ${id} - not found (likely cleaned up)`,
+        );
+        continue;
+      }
+
+      const job = JobEntity.fromRawHash<T>(this, id, raw, 'failed');
+      jobs.push(job);
     }
     return jobs;
   }
@@ -1084,14 +1124,19 @@ return 1
     start = 0,
     end = -1,
   ): Promise<Array<JobEntity<T>>> {
+    // Map to track which status each job belongs to (for known status optimization)
+    const idToStatus = new Map<string, Status>();
     const idSets: string[] = [];
 
     // Helper to push a range from a sorted set
-    const pushZRange = async (key: string, reverse = false) => {
+    const pushZRange = async (key: string, status: Status, reverse = false) => {
       try {
         const ids = reverse
           ? await this.r.zrevrange(key, 0, -1)
           : await this.r.zrange(key, 0, -1);
+        for (const id of ids) {
+          idToStatus.set(id, status);
+        }
         idSets.push(...ids);
       } catch (_e) {
         // ignore
@@ -1101,16 +1146,16 @@ return 1
     const statuses = new Set(jobStatuses);
 
     if (statuses.has('active')) {
-      await pushZRange(`${this.ns}:processing`);
+      await pushZRange(`${this.ns}:processing`, 'active');
     }
     if (statuses.has('delayed')) {
-      await pushZRange(`${this.ns}:delayed`);
+      await pushZRange(`${this.ns}:delayed`, 'delayed');
     }
     if (statuses.has('completed')) {
-      await pushZRange(`${this.ns}:completed`, true);
+      await pushZRange(`${this.ns}:completed`, 'completed', true);
     }
     if (statuses.has('failed')) {
-      await pushZRange(`${this.ns}:failed`, true);
+      await pushZRange(`${this.ns}:failed`, 'failed', true);
     }
     if (statuses.has('waiting')) {
       // Aggregate waiting jobs by iterating known groups (no KEYS scan)
@@ -1122,6 +1167,9 @@ return 1
           const rows = await pipe.exec();
           for (const r of rows || []) {
             const arr = (r?.[1] as string[]) || [];
+            for (const id of arr) {
+              idToStatus.set(id, 'waiting');
+            }
             idSets.push(...arr);
           }
         }
@@ -1146,19 +1194,31 @@ return 1
       end >= 0 ? uniqueIds.slice(start, end + 1) : uniqueIds.slice(start);
     if (slice.length === 0) return [];
 
+    // Atomically fetch all job hashes in one pipeline
     const pipe = this.r.multi();
     for (const id of slice) {
       pipe.hgetall(`${this.ns}:job:${id}`);
     }
     const rows = await pipe.exec();
 
+    // Construct jobs directly from pipeline data (atomic, no race condition)
     const jobs: Array<JobEntity<T>> = [];
     for (let i = 0; i < slice.length; i++) {
       const id = slice[i];
       const raw = (rows?.[i]?.[1] as Record<string, string>) || {};
-      if (!raw || Object.keys(raw).length === 0) continue;
-      const built = await this.getJob(id);
-      if (built) jobs.push(built);
+
+      // Skip jobs that were already cleaned up
+      if (!raw || Object.keys(raw).length === 0) {
+        this.logger.warn(
+          `Skipping job ${id} - not found (likely cleaned up by retention)`,
+        );
+        continue;
+      }
+
+      // Use the known status from the index we fetched from
+      const knownStatus = idToStatus.get(id);
+      const job = JobEntity.fromRawHash<T>(this, id, raw, knownStatus);
+      jobs.push(job);
     }
     return jobs;
   }

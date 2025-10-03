@@ -137,6 +137,63 @@ export class Job<T = any> {
     });
   }
 
+  /**
+   * Create a Job from raw Redis hash data with optional known status
+   * This avoids extra Redis lookups when status is already known
+   */
+  static fromRawHash<T = any>(
+    queue: Queue<T>,
+    id: string,
+    raw: Record<string, string>,
+    knownStatus?: Status | 'unknown',
+  ): Job<T> {
+    const groupId = raw.groupId ?? '';
+    const payload = raw.data ? safeJsonParse(raw.data) : null;
+    const attempts = raw.attempts ? parseInt(raw.attempts, 10) : 0;
+    const maxAttempts = raw.maxAttempts
+      ? parseInt(raw.maxAttempts, 10)
+      : queue.maxAttemptsDefault;
+    const timestampMs = raw.timestamp ? parseInt(raw.timestamp, 10) : 0;
+    const orderMs = raw.orderMs ? parseInt(raw.orderMs, 10) : undefined;
+    const delayUntil = raw.delayUntil ? parseInt(raw.delayUntil, 10) : 0;
+    const processedOn = raw.processedOn
+      ? parseInt(raw.processedOn, 10)
+      : undefined;
+    const finishedOn = raw.finishedOn
+      ? parseInt(raw.finishedOn, 10)
+      : undefined;
+    const failedReason =
+      (raw.failedReason ?? raw.lastErrorMessage) || undefined;
+    const stacktrace = (raw.stacktrace ?? raw.lastErrorStack) || undefined;
+    const returnvalue = raw.returnvalue
+      ? safeJsonParse(raw.returnvalue)
+      : undefined;
+
+    return new Job<T>({
+      queue,
+      id,
+      name: 'groupmq',
+      data: payload as T,
+      groupId,
+      attemptsMade: attempts,
+      opts: {
+        attempts: maxAttempts,
+        delay:
+          delayUntil && delayUntil > Date.now()
+            ? delayUntil - Date.now()
+            : undefined,
+      },
+      processedOn,
+      finishedOn,
+      failedReason,
+      stacktrace,
+      returnvalue,
+      timestamp: timestampMs || Date.now(),
+      orderMs,
+      status: knownStatus ?? coerceStatus(raw.status as any),
+    });
+  }
+
   static async fromStore<T = any>(
     queue: Queue<T>,
     id: string,
