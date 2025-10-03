@@ -5,23 +5,23 @@ description: How GroupMQ differs from BullMQ and when to choose each.
 
 ## Overview
 
-Both GroupMQ and BullMQ are Redis‑backed job queues for Node.js. GroupMQ focuses on per‑group FIFO with a minimal, BullMQ‑inspired API surface; BullMQ provides a broader feature set including single‑process concurrency controls.
+Both GroupMQ and BullMQ are Redis-backed job queues for Node.js. GroupMQ focuses on per-group FIFO with a minimal, BullMQ-inspired API surface; BullMQ provides a broader feature set including single-process concurrency controls.
 
 ## Core differences
 
-- Per‑group FIFO
-  - GroupMQ guarantees at most one active job per `groupId`; different groups run in parallel.
+- Per-group FIFO
+  - GroupMQ guarantees at most one active job per `groupId`, different groups run in parallel.
   - BullMQ provides FIFO per queue (with priorities/flows available when enabled).
 
 - Ordering via `orderMs`
-  - GroupMQ lets producers set `orderMs`; the queue can enforce strict ordering and optionally wait using `orderingDelayMs`.
+  - GroupMQ lets producers set `orderMs`, the queue can enforce strict ordering and optionally wait using `orderingDelayMs`.
 
 - Concurrency model
-  - Both libraries scale well. BullMQ exposes an in‑process `concurrency` option; GroupMQ prefers process‑level scaling (child processes, Cluster, PM2, containers). You can also run multiple GroupMQ workers in one process to achieve similar throughput characteristics for I/O‑bound work.
+  - Both libraries scale well. BullMQ exposes an in-process `concurrency` option, GroupMQ prefers process-level scaling (child processes, Cluster, PM2, containers). You can also run multiple GroupMQ workers in one process to achieve similar throughput characteristics for I/O-bound work.
 
 - API shape and compatibility
   - GroupMQ aligns method names and Job shapes where sensible (e.g., counts, statuses) to ease dashboard integration (e.g., BullBoard adapter included).
-  - Not all BullMQ features are present; GroupMQ keeps a lean surface focused on grouped FIFO and performance.
+  - Not all BullMQ features are present, GroupMQ keeps a lean surface focused on grouped FIFO and performance.
 
 - Operational focus
   - GroupMQ emphasizes low Redis load via adaptive blocking, atomic completion, and recovery helpers (promote delayed, recover delayed groups).
@@ -31,17 +31,17 @@ Both GroupMQ and BullMQ are Redis‑backed job queues for Node.js. GroupMQ focus
 To be transparent: for most general queueing needs today, BullMQ is a great default choice.
 
 - Choose GroupMQ when you:
-  - Need strict per‑group FIFO (exactly one in‑flight job per `groupId`) without paying for BullMQ Pro
+  - Need strict per-group FIFO (exactly one in-flight job per `groupId`) without paying for BullMQ Pro
   - Need correct ordering by producer timestamp via `orderMs` (with optional `orderingDelayMs`)
 
 - Choose BullMQ when you:
-  - Want a broader feature set and in‑process `concurrency` controls
+  - Want a broader feature set and in-process `concurrency` controls
   - Need advanced features such as flows, priorities, or rate limiting
   - Are willing to use BullMQ Pro for strict grouping/ordering features
 
 ## Scaling
 
-Both libraries scale. BullMQ offers a per‑process `concurrency` setting, while GroupMQ encourages process‑level scaling. You can also create multiple workers in a single Node app when suitable (especially for I/O‑bound tasks).
+Both libraries scale. BullMQ offers a per-process `concurrency` setting, while GroupMQ encourages process-level scaling. You can also create multiple workers in a single Node app when suitable (especially for I/O-bound tasks).
 
 BullMQ example (in‑process concurrency):
 
@@ -65,7 +65,7 @@ const workers = Array.from({ length: 4 }, () =>
 workers.forEach((w) => w.run());
 ```
 
-GroupMQ example (process‑level scaling across CPUs):
+GroupMQ example (process-level scaling across CPUs):
 
 ```ts title="cluster.ts"
 import cluster from 'node:cluster';
@@ -85,11 +85,10 @@ if (cluster.isPrimary) {
 
 ## Feature summary
 
-- Per‑group FIFO: Yes (GroupMQ) vs per‑queue (BullMQ)
+- Per-group FIFO: Yes (GroupMQ) vs per-queue (BullMQ)
 - `orderMs` + optional `orderingDelayMs`: GroupMQ
 - Repeats/Cron, Delays, Retries with backoff: Both
-- Single‑process `concurrency` option: BullMQ (GroupMQ prefers processes)
- - Single‑process `concurrency` option: BullMQ (GroupMQ prefers processes; multiple workers in one app also works)
+- Single-process `concurrency` option: BullMQ (GroupMQ prefers processes; multiple workers in one app also works)
 - BullBoard integration: Available (GroupMQ adapter)
 
 ## Creating queues and workers (side‑by‑side)
@@ -136,7 +135,7 @@ const queue = new Queue<Payload>({
   namespace: 'foo',
 });
 
-// Add jobs — use groupId to control per‑group FIFO
+// Add jobs - use groupId to control per-group FIFO
 await queue.add({ groupId: 'group-1', data: { foo: 'bar' } });
 await queue.add({ groupId: 'group-2', data: { qux: 'baz' } });
 
@@ -158,7 +157,7 @@ Notes:
 ## Migration notes
 
 - Similar method names: `add`, `getJobCounts`, `getJobsByStatus`, etc.
-- Replace in‑process `concurrency` with multiple processes/replicas.
+- Replace in-process `concurrency` with multiple processes/replicas.
 - Use `groupId` to model serialized domains (e.g., per user/account/order).
 
 

@@ -1,5 +1,5 @@
 ---
-title: API — Worker
+title: API - Worker
 description: Worker options, events, and behavior.
 ---
 
@@ -36,17 +36,17 @@ new Worker({ queue, handler, heartbeatMs?, maxAttempts?, backoff?, ... })
 
 ### Options
 
-- `queue` — a `Queue` instance
-- `handler(job)` — async function receiving a reserved job
-- `heartbeatMs` — heartbeat interval; defaults to `queue.jobTimeoutMs / 3`
-- `maxAttempts` — worker-level cap (defaults to queue default)
-- `backoff(attempt)` — function returning ms to wait before retrying
-- `enableCleanup` — periodically runs cleanup and cron promotions (default true)
-- `cleanupIntervalMs` — cadence for cleanup/promotions (default 60s)
-- `blockingTimeoutSec` — reserve blocking timeout (default 5s)
-- `atomicCompletion` — complete and try to reserve next in-group (default true)
-- `concurrency` — number of jobs to process concurrently (default 1)
-- `logger` — `true` to enable default logs or pass a Logger
+- `queue` - a `Queue` instance
+- `handler(job)` - async function receiving a reserved job
+- `heartbeatMs` - heartbeat interval; defaults to `queue.jobTimeoutMs / 3`
+- `maxAttempts` - worker-level cap (defaults to queue default)
+- `backoff(attempt)` - function returning ms to wait before retrying
+- `enableCleanup` - periodically runs cleanup and cron promotions (default true)
+- `cleanupIntervalMs` - cadence for cleanup/promotions (default 60s)
+- `blockingTimeoutSec` - reserve blocking timeout (default 5s)
+- `atomicCompletion` - complete and try to reserve next in-group (default true)
+- `concurrency` - number of jobs to process concurrently (default 1)
+- `logger` - `true` to enable default logs or pass a Logger
 
 ```
 
@@ -61,12 +61,12 @@ await worker.run()
 ### Events
 
 - `ready`
-- `completed` — `(job)`
-- `failed` — `(job)`
-- `error` — `(error)`
+- `completed` - `(job)`
+- `failed` - `(job)`
+- `error` - `(error)`
 - `closed`
 - `ioredis:close`
-- `graceful-timeout` — `(job)`
+- `graceful-timeout` - `(job)`
 
 ```ts
 worker.on('ready', () => console.log('worker ready'))
@@ -78,8 +78,8 @@ worker.on('error', (err) => console.error('worker error', err))
 
 ### Methods
 
-- `run()` — start processing
-- `close(gracefulTimeoutMs?)` — stop and wait for current job
+- `run()` - start processing
+- `close(gracefulTimeoutMs?)` - stop and wait for current job
 - `getCurrentJob()`
 - `isProcessing()`
 - `getWorkerMetrics()`

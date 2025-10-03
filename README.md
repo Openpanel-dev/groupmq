@@ -1,7 +1,7 @@
 
 <p align="center">
   <img src="website/public/favicon/web-app-manifest-512x512.png" width="200px" height="200px" />
-	<h1 align="center"><b>GroupMQ - Redis Group Queue</b></h1>
+	<h1 align="center"><b>GroupMQ, Redis Group Queue</b></h1>
 <p align="center">
     A fast, reliable Redis-backed per-group FIFO queue for Node + TypeScript with guaranteed job ordering and parallel processing across groups.
     <br />
@@ -55,10 +55,10 @@ worker.run();
 
 ### Simplified API
 
-- **No more polling vs blocking confusion** - Always uses efficient blocking operations
+- **No more polling vs blocking confusion**, always uses efficient blocking operations
 - **Clear naming** - `jobTimeoutMs` instead of confusing `visibilityTimeoutMs`
-- **Automatic namespace prefixing** - All namespaces get `groupmq:` prefix to avoid conflicts
-- **Unified configuration** - No duplicate options between Queue and Worker
+- **Automatic namespace prefixing**, all namespaces get `groupmq:` prefix to avoid conflicts
+- **Unified configuration**, no duplicate options between Queue and Worker
 
 ### Performance & Reliability
 
@@ -67,6 +67,19 @@ worker.run();
 - **FIFO ordering** within each group by `orderMs` with stable tiebreaking
 - **At-least-once delivery** with configurable retries and backoff
 - **Efficient blocking operations** - no wasteful polling
+
+## Inspiration from BullMQ
+
+GroupMQ is heavily inspired by [BullMQ](https://github.com/taskforcesh/bullmq), one of the most popular Redis-based job queue libraries for Node.js. We've taken many core concepts and design patterns from BullMQ while adapting them for our specific use case of per-group FIFO processing.
+
+### Key differences from BullMQ:
+- **Per-group FIFO ordering**, jobs within the same group are processed in strict order
+- **Group-based concurrency**, only one job per group can be active at a time
+- **Ordered processing**, built-in support for `orderMs` timestamp-based ordering
+- **Cross-group parallelism**, multiple groups can be processed simultaneously
+- **No job types**, simplified to a single job, instead use union typed data `{ type: 'paint', data: { ... } } | { type: 'repair', data: { ... } }` 
+
+We're grateful to the BullMQ team for their excellent work and the foundation they've provided for the Redis job queue ecosystem.
 
 ### Queue Options
 
@@ -145,10 +158,10 @@ await queue.removeRepeatingJob('emails', { pattern: '0 9 * * 1-5' });
 
 - The worker's periodic cycle runs: `cleanup()`, `promoteDelayedJobs()`, and `processRepeatingJobs()`.
 - Repeating jobs are enqueued during this cycle. To avoid drift, set `cleanupIntervalMs` to be less than or equal to your repeat cadence.
-  - Example: for `repeat.every = 5000`, use `cleanupIntervalMs` ≈ 1000–2000 ms.
-  - Very frequent repeats (≤ 1s) are possible but may increase Redis load; consider `cleanupIntervalMs` 200–500 ms.
+  - Example: for `repeat.every = 5000`, use `cleanupIntervalMs` ≈ 1000-2000 ms.
+  - Very frequent repeats (≤ 1s) are possible but may increase Redis load; consider `cleanupIntervalMs` 200-500 ms.
 - The scheduler is idempotent: it updates the next run time before enqueueing to prevent double runs.
-- Each occurrence is a normal job with a fresh `jobId`, preserving per‑group FIFO semantics.
+- Each occurrence is a normal job with a fresh `jobId`, preserving per-group FIFO semantics.
 - You can monitor repeated runs via BullBoard using the provided adapter.
 
 ## Graceful Shutdown
@@ -280,23 +293,23 @@ This section explains GroupMQ's internal architecture for contributors and those
 
 GroupMQ uses these Redis keys (all prefixed with `groupmq:{namespace}:`):
 
-- **`:g:{groupId}`** - Sorted set of job IDs in a group, ordered by score (derived from `orderMs` and `seq`)
-- **`:ready`** - Sorted set of group IDs that have jobs available, ordered by lowest job score
-- **`:job:{jobId}`** - Hash containing job data (id, groupId, data, attempts, status, etc.)
-- **`:lock:{groupId}`** - String with job ID that currently owns the group lock (with TTL)
-- **`:processing`** - Sorted set of active job IDs, ordered by deadline
-- **`:processing:{jobId}`** - Hash with processing metadata (groupId, deadlineAt)
-- **`:delayed`** - Sorted set of delayed jobs, ordered by runAt timestamp
-- **`:completed`** - Sorted set of completed job IDs (for retention)
-- **`:repeats`** - Hash of repeating job definitions (groupId → config)
+- **`:g:{groupId}`**, sorted set of job IDs in a group, ordered by score (derived from `orderMs` and `seq`)
+- **`:ready`**, sorted set of group IDs that have jobs available, ordered by lowest job score
+- **`:job:{jobId}`**, hash containing job data (id, groupId, data, attempts, status, etc.)
+- **`:lock:{groupId}`**, string with job ID that currently owns the group lock (with TTL)
+- **`:processing`**, sorted set of active job IDs, ordered by deadline
+- **`:processing:{jobId}`**, hash with processing metadata (groupId, deadlineAt)
+- **`:delayed`**, sorted set of delayed jobs, ordered by runAt timestamp
+- **`:completed`**, sorted set of completed job IDs (for retention)
+- **`:repeats`**, hash of repeating job definitions (groupId → config)
 
 #### Job Lifecycle States
 
-1. **Waiting** - Job is in `:g:{groupId}` and group is in `:ready`
-2. **Delayed** - Job is in `:delayed` (scheduled for future)
-3. **Active** - Job is in `:processing` and group is locked
-4. **Completed** - Job is in `:completed` (retention)
-5. **Failed** - Job exceeded maxAttempts, moved to completed with failed status
+1. **Waiting**, job is in `:g:{groupId}` and group is in `:ready`
+2. **Delayed**, job is in `:delayed` (scheduled for future)
+3. **Active**, job is in `:processing` and group is locked
+4. **Completed**, job is in `:completed` (retention)
+5. **Failed**, job exceeded maxAttempts, moved to completed with failed status
 
 #### Worker Loop
 
@@ -334,13 +347,13 @@ while (!stopping) {
 
 All critical operations use Lua scripts for atomicity:
 
-- **`enqueue.lua`** - Adds job to group queue, adds group to ready set
-- **`reserve.lua`** - Finds ready group, pops head job, locks group
-- **`reserve-batch.lua`** - Reserves one job from multiple groups atomically
-- **`complete.lua`** - Marks job complete, unlocks group, re-adds group to ready if more jobs
-- **`complete-and-reserve-next.lua`** - Atomic completion + reservation from same group
-- **`retry.lua`** - Increments attempts, re-adds job to group with backoff delay
-- **`remove.lua`** - Removes job from all data structures
+- **`enqueue.lua`**, adds job to group queue, adds group to ready set
+- **`reserve.lua`**, finds ready group, pops head job, locks group
+- **`reserve-batch.lua`**, reserves one job from multiple groups atomically
+- **`complete.lua`**, marks job complete, unlocks group, re-adds group to ready if more jobs
+- **`complete-and-reserve-next.lua`**, atomic completion + reservation from same group
+- **`retry.lua`**, increments attempts, re-adds job to group with backoff delay
+- **`remove.lua`**, removes job from all data structures
 
 #### Job Reservation Flow
 
@@ -374,8 +387,8 @@ Jobs are ordered using a composite score:
 score = (orderMs * 10000) + seq
 ```
 
-- `orderMs` - User-provided timestamp for event ordering
-- `seq` - Auto-incrementing sequence for tiebreaking
+- `orderMs`, user-provided timestamp for event ordering
+- `seq`, auto-incrementing sequence for tiebreaking
 
 This ensures:
 - Jobs with earlier `orderMs` process first
