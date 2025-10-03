@@ -700,5 +700,86 @@
       "jobType": "cpu",
       "multiProcess": true
     }
+  },
+  {
+    "timestamp": 1759412877150,
+    "queueType": "groupmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 62709,
+    "throughputJobsPerSec": 79.73,
+    "avgPickupMs": 28972.6,
+    "avgProcessingMs": 47.85,
+    "avgTotalMs": 29020.45,
+    "p95PickupMs": 56068,
+    "p95ProcessingMs": 50.89,
+    "p95TotalMs": 56115.6,
+    "peakCpuPercent": 3,
+    "peakMemoryMB": 135.7,
+    "avgCpuPercent": 0,
+    "avgMemoryMB": 107.4,
+    "settings": {
+      "mq": "groupmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
+  },
+  {
+    "timestamp": 1759438027384,
+    "queueType": "groupmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 65577,
+    "throughputJobsPerSec": 76.25,
+    "avgPickupMs": 30884,
+    "avgProcessingMs": 50.06,
+    "avgTotalMs": 30934.06,
+    "p95PickupMs": 58890,
+    "p95ProcessingMs": 55.84,
+    "p95TotalMs": 58937.09,
+    "peakCpuPercent": 3,
+    "peakMemoryMB": 144.1,
+    "avgCpuPercent": 0,
+    "avgMemoryMB": 99.3,
+    "settings": {
+      "mq": "groupmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
+  },
+  {
+    "timestamp": 1759480439680,
+    "queueType": "groupmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 61159,
+    "throughputJobsPerSec": 81.75,
+    "avgPickupMs": 28222.04,
+    "avgProcessingMs": 46.63,
+    "avgTotalMs": 28268.67,
+    "p95PickupMs": 53969,
+    "p95ProcessingMs": 51.57,
+    "p95TotalMs": 54012.95,
+    "peakCpuPercent": 5,
+    "peakMemoryMB": 143.6,
+    "avgCpuPercent": 0,
+    "avgMemoryMB": 118.2,
+    "settings": {
+      "mq": "groupmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
   }
 ]

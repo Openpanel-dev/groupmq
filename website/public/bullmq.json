@@ -430,5 +430,86 @@
       "jobType": "cpu",
       "multiProcess": true
     }
+  },
+  {
+    "timestamp": 1759412958960,
+    "queueType": "bullmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 63003,
+    "throughputJobsPerSec": 79.36,
+    "avgPickupMs": 30431.24,
+    "avgProcessingMs": 48.56,
+    "avgTotalMs": 30479.79,
+    "p95PickupMs": 57261,
+    "p95ProcessingMs": 55.57,
+    "p95TotalMs": 57305.27,
+    "peakCpuPercent": 29,
+    "peakMemoryMB": 242.8,
+    "avgCpuPercent": 0.3,
+    "avgMemoryMB": 220.5,
+    "settings": {
+      "mq": "bullmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
+  },
+  {
+    "timestamp": 1759438027384,
+    "queueType": "bullmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 61764,
+    "throughputJobsPerSec": 80.95,
+    "avgPickupMs": 30004.61,
+    "avgProcessingMs": 47.62,
+    "avgTotalMs": 30052.23,
+    "p95PickupMs": 57175,
+    "p95ProcessingMs": 54.38,
+    "p95TotalMs": 57219.17,
+    "peakCpuPercent": 8,
+    "peakMemoryMB": 229.5,
+    "avgCpuPercent": 0.2,
+    "avgMemoryMB": 213,
+    "settings": {
+      "mq": "bullmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
+  },
+  {
+    "timestamp": 1759480439680,
+    "queueType": "bullmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 62141,
+    "throughputJobsPerSec": 80.46,
+    "avgPickupMs": 30256.67,
+    "avgProcessingMs": 47.79,
+    "avgTotalMs": 30304.46,
+    "p95PickupMs": 56904,
+    "p95ProcessingMs": 53.09,
+    "p95TotalMs": 56948.86,
+    "peakCpuPercent": 8,
+    "peakMemoryMB": 221.4,
+    "avgCpuPercent": 0.3,
+    "avgMemoryMB": 213.5,
+    "settings": {
+      "mq": "bullmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
   }
 ]

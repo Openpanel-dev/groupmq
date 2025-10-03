@@ -387,7 +387,7 @@ export function BenchmarkChart() {
       {(selectedMetric === 'avgMemoryMB' ||
         selectedMetric === 'avgCpuPercent') && (
         <Card className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
-          <CardContent className="pt-6">
+          <CardContent>
             <div className="flex items-start gap-3">
               <svg
                 className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600 dark:text-amber-500"
@@ -570,9 +570,22 @@ export function BenchmarkChart() {
                   content={
                     <ChartTooltipContent
                       labelFormatter={(value) => `${value}`}
-                      formatter={(value) =>
-                        `${Number(value).toFixed(2)} ${METRIC_LABELS[selectedMetric].unit}`
-                      }
+                      formatter={(value, name) => {
+                        const label =
+                          chartConfig[name as keyof typeof chartConfig]
+                            ?.label || name;
+                        return (
+                          <>
+                            <span className="text-muted-foreground">
+                              {label}
+                            </span>
+                            <span className="font-mono font-medium tabular-nums text-foreground ml-auto">
+                              {Number(value).toFixed(2)}{' '}
+                              {METRIC_LABELS[selectedMetric].unit}
+                            </span>
+                          </>
+                        );
+                      }}
                     />
                   }
                 />
@@ -640,7 +653,28 @@ export function BenchmarkChart() {
                   tickMargin={8}
                 />
                 <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-                <ChartTooltip content={<ChartTooltipContent />} />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      formatter={(value, name) => {
+                        const label =
+                          chartConfig[name as keyof typeof chartConfig]
+                            ?.label || name;
+                        return (
+                          <>
+                            <span className="text-muted-foreground">
+                              {label}
+                            </span>
+                            <span className="font-mono font-medium tabular-nums text-foreground ml-auto">
+                              {Number(value).toFixed(2)}{' '}
+                              {METRIC_LABELS[selectedMetric].unit}
+                            </span>
+                          </>
+                        );
+                      }}
+                    />
+                  }
+                />
                 <ChartLegend content={<ChartLegendContent />} />
                 <Bar
                   dataKey="groupmq"
