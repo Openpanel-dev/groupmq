@@ -1,3 +1,11 @@
+## [1.0.0-next.12](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.11...v1.0.0-next.12) (2025-10-04)
+
+
+### Bug Fixes
+
+* handle sub 1500ms cron jobs (new setting schedulerLockTtlMs) ([b40f3fe](https://github.com/Openpanel-dev/groupmq/commit/b40f3fe3b5c7565ffd434ee155187f70d877fdbb))
+* improve test speed and flakeyness ([7110899](https://github.com/Openpanel-dev/groupmq/commit/7110899f4e7be24e8247d74b7b29a156a1063c61))
+
 ## [1.0.0-next.11](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.10...v1.0.0-next.11) (2025-10-03)
 
 
