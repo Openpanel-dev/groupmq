@@ -874,9 +874,13 @@ return 1
 
     // Use BullMQ-style adaptive timeout with delayed job consideration
     const adaptiveTimeout = this.getBlockTimeout(timeoutSec, blockUntil);
-    this.logger.debug(
-      `Starting blocking operation (timeout: ${adaptiveTimeout}s)`,
-    );
+
+    // Only log blocking operations every 10th time to reduce spam
+    if (this._consecutiveEmptyReserves % 10 === 0) {
+      this.logger.debug(
+        `Starting blocking operation (timeout: ${adaptiveTimeout}s, consecutive empty: ${this._consecutiveEmptyReserves})`,
+      );
+    }
 
     // Use ready queue for blocking behavior (more reliable than marker system)
     const readyKey = nsKey(this.ns, 'ready');
@@ -900,9 +904,13 @@ return 1
       }
 
       const [, groupId, score] = result;
-      this.logger.debug(
-        `Blocking result: group=${groupId}, score=${score} (took ${bzpopminDuration}ms)`,
-      );
+
+      // Only log blocking results every 10th time to reduce spam
+      if (this._consecutiveEmptyReserves % 10 === 0) {
+        this.logger.debug(
+          `Blocking result: group=${groupId}, score=${score} (took ${bzpopminDuration}ms)`,
+        );
+      }
 
       // Try to reserve directly from the specific group first to reduce contention
       const reserveStart = Date.now();

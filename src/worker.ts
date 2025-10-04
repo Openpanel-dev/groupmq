@@ -131,6 +131,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     consecutiveEmptyReserves: 0,
     lastActivityTime: Date.now(),
   };
+  private emptyReserveBackoffMs = 0;
   private stuckDetectionTimer?: NodeJS.Timeout;
   private redisCloseHandler?: () => void;
   private redisErrorHandler?: (error: Error) => void;
@@ -282,6 +283,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             this.lastJobPickupTime = Date.now();
             this.blockingStats.consecutiveEmptyReserves = 0;
             this.blockingStats.lastActivityTime = Date.now();
+            this.emptyReserveBackoffMs = 0; // Reset backoff when we get a job
 
             this.logger.debug(
               `Fetched job ${job.id} from group ${job.groupId}`,
@@ -290,9 +292,15 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             // No more jobs available
             this.blockingStats.consecutiveEmptyReserves++;
 
-            this.logger.debug(
-              `No job available (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
-            );
+            // Only log every 50th empty reserve to reduce spam, or on important milestones
+            if (
+              this.blockingStats.consecutiveEmptyReserves % 50 === 0 ||
+              this.blockingStats.consecutiveEmptyReserves % 100 === 0
+            ) {
+              this.logger.debug(
+                `No job available (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
+              );
+            }
 
             // Log warning if too many consecutive empty reserves
             if (
@@ -313,6 +321,29 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               }
             } catch (err) {
               this.logger.warn(`Recovery error:`, err);
+            }
+
+            // Exponential backoff when no jobs are available to prevent tight polling
+            // Start backoff after just 3 consecutive empty reserves (more aggressive than before)
+            if (this.blockingStats.consecutiveEmptyReserves > 3) {
+              // More aggressive backoff: start at 50ms, grow faster, cap at 2000ms
+              if (this.emptyReserveBackoffMs === 0) {
+                this.emptyReserveBackoffMs = 50; // Start at 50ms
+              } else {
+                this.emptyReserveBackoffMs = Math.min(
+                  2000, // Cap at 2 seconds
+                  Math.max(50, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
+                );
+              }
+
+              // Only log backoff every 20th time to reduce spam
+              if (this.blockingStats.consecutiveEmptyReserves % 20 === 0) {
+                this.logger.debug(
+                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms before next reserve attempt (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
+                );
+              }
+
+              await this.delay(this.emptyReserveBackoffMs);
             }
 
             // No more jobs, break fetch loop if we have jobs processing
