@@ -1,3 +1,10 @@
+## [1.0.0-next.13](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.12...v1.0.0-next.13) (2025-10-04)
+
+
+### Bug Fixes
+
+* logging issues ([2f6e7aa](https://github.com/Openpanel-dev/groupmq/commit/2f6e7aaf3dc2710e37c38113c3a2bbc7fcd06fa8))
+
 ## [1.0.0-next.12](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.11...v1.0.0-next.12) (2025-10-04)
 
 
