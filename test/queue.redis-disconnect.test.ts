@@ -271,7 +271,7 @@ describe('Redis Disconnect/Reconnect Tests', () => {
       }
 
       // Wait for processing
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
 
       expect(processed.length).toBeGreaterThan(50); // Should process most jobs
 

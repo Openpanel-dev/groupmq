@@ -237,7 +237,7 @@ describe('Advanced Grouping Tests', () => {
         allJobsProcessed = true;
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     await worker1.close();

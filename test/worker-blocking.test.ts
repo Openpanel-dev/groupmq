@@ -70,8 +70,8 @@ describe('Worker Blocking Detection Tests', () => {
       });
     }
 
-    // Wait for workers to start
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for workers to start - reduced delay
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // Add jobs to many different groups
     const jobPromises = [];
@@ -86,13 +86,13 @@ describe('Worker Blocking Detection Tests', () => {
 
     await Promise.all(jobPromises);
 
-    // Monitor workers for a period to see if any get stuck
+    // Monitor workers for a period to see if any get stuck - reduced duration
     let totalJobsProcessed = 0;
-    const monitorDuration = 10_000;
+    const monitorDuration = 5_000;
     const startTime = Date.now();
 
     while (Date.now() - startTime < monitorDuration) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Get worker metrics
       let activeWorkers = 0;
@@ -162,8 +162,8 @@ describe('Worker Blocking Detection Tests', () => {
       });
     }
 
-    // Let it process for a bit (increased for scheduler tick + processing)
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Let it process for a bit - reduced for faster tests
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     // Check that worker isn't stuck even with short timeouts
     const metrics = worker.getWorkerMetrics();
@@ -201,8 +201,8 @@ describe('Worker Blocking Detection Tests', () => {
       });
     }
 
-    // Monitor for stuck detection
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Monitor for stuck detection - reduced for faster tests
+    await new Promise((resolve) => setTimeout(resolve, 2500));
 
     const metrics = worker.getWorkerMetrics();
     // Worker should have attempted to process jobs

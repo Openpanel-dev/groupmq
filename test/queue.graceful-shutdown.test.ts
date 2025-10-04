@@ -85,7 +85,7 @@ describe('Graceful Shutdown Tests', () => {
     const worker = new Worker({
       queue: queue,
       handler: async (job) => {
-        await new Promise((resolve) => setTimeout(resolve, 200)); // Simulate work
+        await new Promise((resolve) => setTimeout(resolve, 50)); // Simulate work - reduced for faster tests
         processedCount++;
         processedIds.push((job.data as any).id);
       },
@@ -111,7 +111,7 @@ describe('Graceful Shutdown Tests', () => {
     expect(isEmpty).toBe(true);
     expect(processedCount).toBe(2);
     expect(processedIds.sort()).toEqual([1, 2]);
-    expect(elapsed).toBeGreaterThan(350); // Should take at least 200ms + 200ms for two jobs
+    expect(elapsed).toBeGreaterThan(80); // Should take at least 50ms + 50ms for two jobs
 
     await worker.close();
     await redis.quit();
@@ -362,7 +362,7 @@ describe('Graceful Shutdown Tests', () => {
     // Add a long-running job
     await queue.add({
       groupId: 'long-group',
-      data: { taskType: 'long-running', duration: 5000 }, // 5 second job
+      data: { taskType: 'long-running', duration: 2000 }, // 2 second job (reduced for faster tests)
     });
 
     let jobStartTime: number | null = null;
@@ -378,7 +378,7 @@ describe('Graceful Shutdown Tests', () => {
         jobStartTime = Date.now();
 
         if (job.data.taskType === 'long-running') {
-          // Simulate a 5-second job
+          // Simulate a long job
           await new Promise((resolve) =>
             setTimeout(resolve, job.data.duration),
           );
@@ -393,7 +393,7 @@ describe('Graceful Shutdown Tests', () => {
     const workerPromise = worker.run();
 
     // Wait for the job to start (give it a moment to pick up the job)
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     expect(jobStartTime).not.toBeNull();
     expect(jobCompleted).toBe(false);
 
@@ -413,14 +413,14 @@ describe('Graceful Shutdown Tests', () => {
 
     // The job should have completed before or very close to when the worker stopped
     const jobDuration = jobEndTime! - jobStartTime!;
-    expect(jobDuration).toBeGreaterThanOrEqual(4900); // At least ~5 seconds
-    expect(jobDuration).toBeLessThan(6000); // But not much more
+    expect(jobDuration).toBeGreaterThanOrEqual(1900); // At least ~2 seconds
+    expect(jobDuration).toBeLessThan(3000); // But not much more
 
     // Worker should not have stopped before the job completed
     expect(jobEndTime!).toBeLessThanOrEqual(workerStoppedTime! + 100); // Allow small margin
 
     await redis.quit();
-  }, 15000); // 15 second timeout for the test
+  }, 8000); // 8 second timeout for the test (reduced)
 
   it('should not pick up new jobs after shutdown is initiated', async () => {
     const redis = new Redis(REDIS_URL);

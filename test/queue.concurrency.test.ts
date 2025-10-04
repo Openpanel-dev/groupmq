@@ -215,8 +215,8 @@ describe('Concurrency and Race Condition Tests', () => {
 
     worker.run();
 
-    // Wait for worker to stop and jobs to be reclaimed
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Wait for worker to stop and jobs to be reclaimed - reduced
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // Create new worker to process remaining jobs
     const worker2 = new Worker({
@@ -229,7 +229,7 @@ describe('Concurrency and Race Condition Tests', () => {
 
     worker2.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     // All jobs should eventually be processed
     expect(processed.length).toBeGreaterThanOrEqual(4);
@@ -274,7 +274,7 @@ describe('Concurrency and Race Condition Tests', () => {
     const enqueueTime = Date.now() - start;
 
     // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     expect(processed.length).toBe(100);
 
@@ -328,7 +328,7 @@ describe('Concurrency and Race Condition Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     expect(processed.length).toBe(20);
 
@@ -392,7 +392,7 @@ describe('Concurrency and Race Condition Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 3000)); // Longer wait for retries
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // Longer wait for retries
 
     // Should process independent jobs first (A1, B1), then dependent jobs (A2, B2) via retry
     expect(processed).toContain('A1'); // Independent, should succeed

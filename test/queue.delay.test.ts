@@ -24,7 +24,11 @@ describe('Delay Jobs Tests', () => {
   beforeEach(async () => {
     // Create unique namespace for each test to avoid interference
     namespace = `test:delay:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    queue = new Queue({ redis, namespace });
+    queue = new Queue({
+      redis,
+      namespace,
+      schedulerLockTtlMs: 50, // Fast scheduler for test - allows frequent delayed job promotion
+    });
 
     // Cleanup
     const keys = await redis.keys(`groupmq:${namespace}*`);
@@ -155,8 +159,8 @@ describe('Delay Jobs Tests', () => {
       runAt: pastDate,
     });
 
-    // Wait for processing
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Wait for processing - use waitForEmpty
+    await queue.waitForEmpty(2000);
 
     await worker.close();
 
@@ -189,23 +193,23 @@ describe('Delay Jobs Tests', () => {
       delay: 2000,
     });
 
-    // Wait 500ms then change delay to 100ms (so it should run soon)
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait 200ms then change delay to 100ms (so it should run soon)
+    await new Promise((resolve) => setTimeout(resolve, 200));
     const changeSuccess = await job.changeDelay(100);
     expect(changeSuccess).toBe(true);
 
-    // Wait for processing (increased for scheduler + delay + processing)
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Wait for processing
+    await queue.waitForEmpty(2000);
 
     await worker.close();
 
     expect(processed).toHaveLength(1);
     expect(processed[0].id).toBe('changeable-job');
 
-    // Job should have been processed around 600ms (500ms + 100ms new delay)
+    // Job should have been processed around 300-500ms (200ms wait + 100ms new delay + scheduler overhead)
     const actualProcessTime = processed[0].processedAt - startTime;
-    expect(actualProcessTime).toBeGreaterThan(500);
-    expect(actualProcessTime).toBeLessThan(1700); // Much less than original 2 second delay, allow for scheduler delay
+    expect(actualProcessTime).toBeGreaterThan(250); // At least 200ms wait + 100ms delay - some tolerance
+    expect(actualProcessTime).toBeLessThan(700); // Should be much faster than original 2s delay
   });
 
   it('should maintain FIFO order within groups even with delays', async () => {
