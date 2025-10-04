@@ -24,7 +24,13 @@ describe('Cron Jobs Tests', () => {
   beforeEach(async () => {
     // Create a unique namespace for each test
     namespace = `test:cron:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    queue = new Queue({ redis, namespace });
+    queue = new Queue({
+      redis,
+      namespace,
+      orderingDelayMs: 0,
+      jobTimeoutMs: 100,
+      schedulerLockTtlMs: 50, // Fast lock for sub-second repeats in tests
+    });
 
     // Cleanup any existing keys
     const keys = await redis.keys(`${namespace}*`);
@@ -52,39 +58,40 @@ describe('Cron Jobs Tests', () => {
           processedAt: Date.now(),
         });
       },
-      cleanupIntervalMs: 1000, // Run cleanup more frequently for faster test
+      cleanupIntervalMs: 1, // Run cleanup more frequently for faster test
+      schedulerIntervalMs: 1,
     });
 
     worker.run();
 
-    // Create a job that repeats every 2 seconds
+    // Create a job that repeats every 100ms
     const cronJob = await queue.add({
       groupId: 'cron-group',
       data: { id: 'recurring-job', message: 'Hello from cron!' },
-      repeat: { every: 2000 }, // Every 2 seconds
+      repeat: { every: 100 }, // Every 100ms
     });
 
     expect(cronJob.id).toContain('repeat:');
 
     // Wait for multiple executions
-    await new Promise((resolve) => setTimeout(resolve, 5500)); // Wait 5.5 seconds
+    await new Promise((resolve) => setTimeout(resolve, 500)); // Wait 500ms
 
     await worker.close();
 
-    // Should have processed the job multiple times (at least 2 times)
-    expect(processed.length).toBeGreaterThanOrEqual(2);
-    expect(processed.length).toBeLessThanOrEqual(4); // Shouldn't be too many
+    // Should have processed the job multiple times (at least 3 times in 500ms)
+    expect(processed.length).toBeGreaterThanOrEqual(3);
+    expect(processed.length).toBeLessThanOrEqual(8); // Shouldn't be too many
 
     // All processed jobs should have the same data
     processed.forEach((job) => {
       expect(job.id).toBe('recurring-job');
     });
 
-    // Jobs should be spaced approximately 2 seconds apart
+    // Jobs should be spaced approximately 100ms apart
     if (processed.length >= 2) {
       const timeDiff = processed[1].processedAt - processed[0].processedAt;
-      expect(timeDiff).toBeGreaterThan(1800); // Allow some tolerance
-      expect(timeDiff).toBeLessThan(3500); // More generous tolerance for system overhead
+      expect(timeDiff).toBeGreaterThan(80); // Allow some tolerance
+      expect(timeDiff).toBeLessThan(200); // More generous tolerance for system overhead
     }
   });
 
@@ -110,8 +117,6 @@ describe('Cron Jobs Tests', () => {
 
     expect(cronJob.id).toContain('repeat:');
 
-    await queue.waitForEmpty();
-
     await worker.close();
 
     // The job should be scheduled but not necessarily executed yet
@@ -127,12 +132,13 @@ describe('Cron Jobs Tests', () => {
       handler: async (job) => {
         processed.push((job.data as any).id);
       },
-      cleanupIntervalMs: 1000,
+      cleanupIntervalMs: 100,
+      schedulerIntervalMs: 50,
     });
 
     worker.run();
 
-    const repeatOptions = { every: 1000 }; // Every second
+    const repeatOptions = { every: 100 }; // Every 100ms
 
     // Create a repeating job
     await queue.add({
@@ -141,8 +147,8 @@ describe('Cron Jobs Tests', () => {
       repeat: repeatOptions,
     });
 
-    // Let it run once
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Let it run a few times
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     // Remove the repeating job
     const removed = await queue.removeRepeatingJob(
@@ -151,14 +157,27 @@ describe('Cron Jobs Tests', () => {
     );
     expect(removed).toBe(true);
 
+    // Wait for the group to drain completely (any already-enqueued jobs to be processed)
+    // The scheduler might have enqueued jobs just before we called removeRepeatingJob
+    const maxWait = 2000;
+    const startWait = Date.now();
+    while (Date.now() - startWait < maxWait) {
+      const waiting = await queue.getWaitingCount();
+      const active = await queue.getActiveCount();
+      if (waiting === 0 && active === 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
     const processedSoFar = processed.length;
 
-    // Wait longer to ensure it doesn't run again
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Now verify no new jobs are scheduled - wait several repeat intervals
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     await worker.close();
 
-    // Should not have processed more jobs after removal
+    // Should not have processed more jobs after the queue drained
     expect(processed.length).toBe(processedSoFar);
   });
 

@@ -157,9 +157,24 @@ await queue.removeRepeatingJob('emails', { pattern: '0 9 * * 1-5' });
 ### Scheduler behavior and best practices
 
 - The worker's periodic cycle runs: `cleanup()`, `promoteDelayedJobs()`, and `processRepeatingJobs()`.
-- Repeating jobs are enqueued during this cycle. To avoid drift, set `cleanupIntervalMs` to be less than or equal to your repeat cadence.
-  - Example: for `repeat.every = 5000`, use `cleanupIntervalMs` ≈ 1000-2000 ms.
-  - Very frequent repeats (≤ 1s) are possible but may increase Redis load; consider `cleanupIntervalMs` 200-500 ms.
+- Repeating jobs are enqueued during this cycle via a distributed scheduler with lock coordination.
+- **Minimum practical repeat interval:** ~1.5-2 seconds (controlled by `schedulerLockTtlMs`, default: 1500ms)
+- For sub-second repeats (not recommended in production):
+  ```ts
+  const queue = new Queue({
+    redis,
+    namespace: 'fast',
+    schedulerLockTtlMs: 50, // Allow fast scheduler lock
+  });
+  
+  const worker = new Worker({
+    queue,
+    schedulerIntervalMs: 10,   // Check every 10ms
+    cleanupIntervalMs: 100,    // Cleanup every 100ms
+    handler: async (job) => { /* ... */ },
+  });
+  ```
+  ⚠️ Fast repeats (< 1s) increase Redis load and should be used sparingly.
 - The scheduler is idempotent: it updates the next run time before enqueueing to prevent double runs.
 - Each occurrence is a normal job with a fresh `jobId`, preserving per-group FIFO semantics.
 - You can monitor repeated runs via BullBoard using the provided adapter.

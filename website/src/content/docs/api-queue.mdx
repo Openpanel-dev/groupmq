@@ -20,6 +20,7 @@ const queue = new Queue<{ foo: string }>({
   jobTimeoutMs: 30_000,
   maxAttempts: 3,
   orderingDelayMs: 0,
+  schedulerLockTtlMs: 1500, // (optional) default: 1500ms, controls min repeat interval
 })
 ```
 

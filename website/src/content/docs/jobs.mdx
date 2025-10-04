@@ -81,20 +81,65 @@ await queue.add({ groupId: 'cron', data: { type: 'reindex', payload: { index: 'p
 await queue.add({ groupId: 'cron', data: { type: 'send-email', payload: { to: 'ops@x.com', subject: 'Daily report' } }, repeat: { pattern: '0 0 * * *' } });
 ```
 
-Scheduling accuracy depends on the worker’s maintenance cycle. The worker periodically runs a cleanup cycle that also materializes repeats and promotes delayed jobs.
+### How the scheduler works
 
-- Default: `cleanupIntervalMs = 60_000` (60s)
-- If you need sub‑minute schedules (e.g., `every: 5000`), set a smaller `cleanupIntervalMs` on your worker:
+Repeating jobs are materialized by a distributed scheduler that runs as part of the worker's maintenance cycle:
+
+1. **Worker scheduler** checks for due repeat jobs every `schedulerIntervalMs` (default: 1000ms)
+2. **Distributed lock** (`schedulerLockTtlMs`, default: 1500ms) ensures only one worker processes the scheduler at a time
+3. When a repeat is due, it's enqueued as a regular job with a fresh job ID
+4. The next occurrence is scheduled automatically
+
+### Scheduling accuracy
+
+The effective minimum interval for repeating jobs is controlled by two settings:
+
+#### Worker: `schedulerIntervalMs`
+
+How often the worker attempts to run the scheduler. Default: 1000ms (1 second)
 
 ```ts
 new Worker({
   queue,
-  cleanupIntervalMs: 1000, // run cleanup/scheduler every 1s
+  schedulerIntervalMs: 1000, // Check every 1s
   async handler(job) { /* ... */ },
 }).run();
 ```
 
-Remove a repeating job:
+#### Queue: `schedulerLockTtlMs`
+
+The distributed lock TTL that prevents multiple workers from running the scheduler simultaneously. **This is the actual bottleneck** for fast repeats.
+
+- **Default:** 1500ms (1.5 seconds)
+- **Minimum practical repeat interval:** ~1.5-2 seconds
+
+For sub-second repeats (e.g., every 500ms), you need to configure both:
+
+```ts
+// ⚠️ NOT RECOMMENDED for production - use sparingly
+const queue = new Queue({
+  redis,
+  namespace: 'fast-queue',
+  schedulerLockTtlMs: 50, // Allow fast lock acquisition
+});
+
+new Worker({
+  queue,
+  schedulerIntervalMs: 10, // Check every 10ms
+  cleanupIntervalMs: 100,  // Run cleanup every 100ms
+  async handler(job) { /* ... */ },
+}).run();
+
+await queue.add({
+  groupId: 'fast-cron',
+  data: { task: 'tick' },
+  repeat: { every: 100 }, // Every 100ms - now possible!
+});
+```
+
+⚠️ **Warning:** Very fast repeating jobs (< 1 second) increase Redis load and coordination overhead. Use them only when absolutely necessary and in controlled environments (e.g., testing, specialized real-time processing).
+
+### Remove a repeating job
 
 ```ts
 await queue.removeRepeatingJob('cron', { every: 5000 });
@@ -102,11 +147,12 @@ await queue.removeRepeatingJob('cron', { every: 5000 });
 await queue.removeRepeatingJob('cron', { pattern: '0 0 * * *' });
 ```
 
-Notes:
+### Best practices
 
-- Repeats are materialized by the worker loop; ensure at least one worker is running.
-- For very small intervals, align cleanupIntervalMs to be less than or equal to the smallest repeat interval for on-time triggers.
-- The original `orderMs` is preserved for jobs created from a repeat definition.
+- **Default settings work well** for most use cases (1+ second intervals)
+- Ensure at least one worker is running to materialize repeats
+- The original `orderMs` is preserved for jobs created from a repeat definition
+- Use standard cron patterns for time-of-day scheduling (e.g., `'0 9 * * 1-5'` for 9 AM on weekdays)
 
 ## Updating job data (current status)
 

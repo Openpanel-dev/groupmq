@@ -16,6 +16,7 @@ export type QueueOptions = {
   orderingDelayMs?: number;
   keepCompleted?: number;
   keepFailed?: number;
+  schedulerLockTtlMs?: number; // default: 1500ms - controls minimum repeat interval
 };
 
 export type RepeatOptions =
@@ -74,6 +75,7 @@ export class Queue<T = any> {
   private orderingDelayMs: number;
   private keepCompleted: number;
   private keepFailed: number;
+  private schedulerLockTtlMs: number;
   public name: string;
 
   // Internal tracking for adaptive behavior
@@ -96,6 +98,7 @@ export class Queue<T = any> {
     this.orderingDelayMs = opts.orderingDelayMs ?? 0;
     this.keepCompleted = Math.max(0, opts.keepCompleted ?? 0);
     this.keepFailed = Math.max(0, opts.keepFailed ?? 0);
+    this.schedulerLockTtlMs = opts.schedulerLockTtlMs ?? 1500;
     // Using external Lua scripts via evalsha; no inline defineCommand
     this.logger =
       typeof opts.logger === 'object'
@@ -1398,7 +1401,7 @@ return 1
   }
 
   async runSchedulerOnce(now = Date.now()): Promise<void> {
-    const ok = await this.acquireSchedulerLock();
+    const ok = await this.acquireSchedulerLock(this.schedulerLockTtlMs);
     if (!ok) return;
     // Reduced limits for faster execution: process a few jobs per tick instead of hundreds
     await this.promoteDelayedJobsBounded(32, now);

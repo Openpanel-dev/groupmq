@@ -16,8 +16,29 @@ type QueueOptions = {
   orderingDelayMs?: number;
   keepCompleted?: number;
   keepFailed?: number;
+  schedulerLockTtlMs?: number; // default: 1500ms
 };
 ```
+
+### schedulerLockTtlMs
+
+Controls the distributed lock TTL for the scheduler that processes cron/repeat jobs and promotes delayed jobs. Multiple workers coordinate using this lock to ensure only one worker runs the scheduler at a time.
+
+- **Default:** `1500` (1.5 seconds)
+- **Effect:** Determines the minimum practical interval for repeating jobs
+- **Recommendation:** Keep at default (1500ms) for production use
+
+For very fast repeating jobs (< 1 second, **not recommended in production**), you can reduce this value:
+
+```ts
+const queue = new Queue({
+  redis,
+  namespace: 'fast-queue',
+  schedulerLockTtlMs: 50, // Allow sub-second repeats (testing only)
+});
+```
+
+⚠️ **Warning:** Setting this too low can increase Redis load and coordination overhead. Fast repeating jobs (< 1s) should be used sparingly and only when necessary.
 
 ## Add options
 
@@ -47,10 +68,27 @@ type WorkerOptions<T> = {
   backoff?: (attempt: number) => number; // ms
   enableCleanup?: boolean; // default: true
   cleanupIntervalMs?: number; // default: 60_000
+  schedulerIntervalMs?: number; // default: 1_000
   blockingTimeoutSec?: number; // default: 5
   atomicCompletion?: boolean; // default: true
   logger?: Logger | true;
+  concurrency?: number; // default: 1
 };
+```
+
+### schedulerIntervalMs
+
+How often the worker attempts to run the scheduler (processes repeating jobs and promotes delayed jobs). Works in conjunction with `queue.schedulerLockTtlMs`.
+
+- **Default:** `1000` (1 second)
+- **Use case:** Set lower for sub-second repeat accuracy (requires also lowering `queue.schedulerLockTtlMs`)
+
+```ts
+new Worker({
+  queue,
+  schedulerIntervalMs: 10, // Check every 10ms
+  async handler(job) { /* ... */ },
+});
 ```
 
 
