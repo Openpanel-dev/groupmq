@@ -348,7 +348,7 @@ export class Queue<T = any> {
   private vt: number;
   private defaultMaxAttempts: number;
   private scanLimit: number;
-  private orderingDelayMs: number;
+  public orderingDelayMs: number;
   private keepCompleted: number;
   private keepFailed: number;
   private schedulerLockTtlMs: number;
@@ -1669,9 +1669,14 @@ return 1
       } else if (result === 'empty') {
         this.logger.warn(`Removed empty group ${groupId} from ready queue`);
       } else if (result === 'locked') {
-        this.logger.warn(
-          `Detected group ${groupId} is locked by another worker`,
-        );
+        // Only log locked group warnings occasionally to reduce spam in high-concurrency environments
+        // This is expected behavior when multiple workers compete for the same groups
+        if (Math.random() < 0.01) {
+          // Log only 1% of the time
+          this.logger.debug(
+            `Detected group ${groupId} is locked by another worker (this is normal with high concurrency)`,
+          );
+        }
       }
       return result as string;
     } catch (error) {

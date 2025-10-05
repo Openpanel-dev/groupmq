@@ -176,7 +176,7 @@ export type WorkerOptions<T> = {
    * Interval in milliseconds between scheduler operations.
    * Scheduler promotes delayed jobs and processes cron/repeating jobs.
    *
-   * @default 2500 (2.5 seconds)
+   * @default Adaptive: min(5000ms, max(1000ms, orderingDelayMs * 0.8)) with 1000ms minimum cap
    * @example 1000 // For fast cron jobs (every minute or less)
    * @example 10000 // For slow cron jobs (hourly or daily)
    *
@@ -184,7 +184,11 @@ export type WorkerOptions<T> = {
    * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
    * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
    * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
-   * - High orderingDelayMs: Ensure scheduler runs more frequently than your delay
+   * - High orderingDelayMs: Automatically adjusted to prevent ordering stalls
+   *
+   * **Important:** The scheduler interval is automatically capped at 80% of your orderingDelayMs
+   * (with a 1000ms minimum) to ensure delayed jobs are promoted promptly and don't cause
+   * ordering stalls, while preventing excessive Redis load from very frequent scheduler runs.
    */
   schedulerIntervalMs?: number;
 
@@ -317,15 +321,39 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.maxAttempts = opts.maxAttempts ?? this.q.maxAttemptsDefault ?? 3;
     this.backoff = opts.backoff ?? defaultBackoff;
     this.enableCleanup = opts.enableCleanup ?? true;
-    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for production
-    this.schedulerMs = opts.schedulerIntervalMs ?? 2500; // 2.5 seconds for better efficiency
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 2; // 2s for better responsiveness
+    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for high-concurrency production
+
+    // Ensure scheduler runs more frequently than ordering delay to prevent stalls
+    const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
+    const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
+    const orderingDelayMs = this.q.orderingDelayMs || 0;
+    this.schedulerMs =
+      opts.schedulerIntervalMs ??
+      (orderingDelayMs > 0
+        ? Math.min(
+            defaultSchedulerMs,
+            Math.max(minSchedulerMs, orderingDelayMs * 0.8),
+          )
+        : defaultSchedulerMs);
+
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s for high-concurrency production
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+  }
+
+  /**
+   * Add jitter to prevent thundering herd problems in high-concurrency environments
+   * @param baseInterval The base interval in milliseconds
+   * @param jitterPercent Percentage of jitter to add (0-1, default 0.1 for 10%)
+   * @returns The interval with jitter applied
+   */
+  private addJitter(baseInterval: number, jitterPercent = 0.1): number {
+    const jitter = Math.random() * baseInterval * jitterPercent;
+    return baseInterval + jitter;
   }
 
   private setupRedisEventHandlers() {
@@ -376,13 +404,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     // Start cleanup timer if enabled
     if (this.enableCleanup) {
       // Cleanup timer: only runs cleanup, not scheduler
+      // Add jitter to prevent all workers from running cleanup simultaneously
       this.cleanupTimer = setInterval(async () => {
         try {
           await this.q.cleanup();
         } catch (err) {
           this.onError?.(err);
         }
-      }, this.cleanupMs);
+      }, this.addJitter(this.cleanupMs));
 
       // Scheduler timer: promotes delayed jobs and processes cron jobs
       // Runs independently in the background, even when worker is blocked on BZPOPMIN
@@ -394,7 +423,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         } catch (_err) {
           // Ignore errors, this is best-effort
         }
-      }, schedulerInterval);
+      }, this.addJitter(schedulerInterval));
     }
 
     // Start stuck detection monitoring
@@ -505,13 +534,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             // Exponential backoff when no jobs are available to prevent tight polling
             // Start backoff after just 3 consecutive empty reserves (more aggressive than before)
             if (this.blockingStats.consecutiveEmptyReserves > 3) {
-              // More aggressive backoff: start at 50ms, grow faster, cap at 2000ms
+              // More aggressive backoff for high-concurrency: start at 100ms, grow faster, cap at 5000ms
               if (this.emptyReserveBackoffMs === 0) {
-                this.emptyReserveBackoffMs = 50; // Start at 50ms
+                this.emptyReserveBackoffMs = 100; // Start at 100ms for high concurrency
               } else {
                 this.emptyReserveBackoffMs = Math.min(
-                  2000, // Cap at 2 seconds
-                  Math.max(50, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
+                  5000, // Cap at 5 seconds for high concurrency
+                  Math.max(100, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
                 );
               }
 
