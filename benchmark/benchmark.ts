@@ -472,7 +472,6 @@ class GroupMQAdapter extends QueueAdapter {
     this.queue = new GroupMQ.Queue({
       redis: this.redis.duplicate(),
       namespace: this.namespace,
-      jobTimeoutMs: 30000,
       orderingDelayMs: 5000,
       keepCompleted: 1,
     });

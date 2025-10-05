@@ -6,36 +6,312 @@ import { Logger, type LoggerInterface } from './logger';
 import { evalScript } from './lua/loader';
 import type { Status } from './status';
 
+/**
+ * Configuration options for a GroupMQ Queue
+ *
+ * @template T The type of data stored in jobs
+ */
 export type QueueOptions = {
+  /**
+   * Logger configuration for queue operations and debugging.
+   *
+   * @default false (no logging)
+   * @example true // Enable basic logging
+   * @example customLogger // Use custom logger instance
+   *
+   * **When to enable:**
+   * - Development: For debugging queue operations
+   * - Production monitoring: For operational insights
+   * - Troubleshooting: When investigating performance issues
+   */
   logger?: LoggerInterface | boolean;
+
+  /**
+   * Redis client instance for queue operations.
+   * Should be a connected ioredis client.
+   *
+   * @example new Redis('redis://localhost:6379')
+   * @example new Redis({ host: 'localhost', port: 6379, db: 0 })
+   */
   redis: Redis;
+
+  /**
+   * Unique namespace for this queue. Used to separate different queues in the same Redis instance.
+   * Should be unique across your application to avoid conflicts.
+   *
+   * @example 'email-queue'
+   * @example 'user-notifications'
+   * @example 'data-processing'
+   */
   namespace: string;
+
+  /**
+   * Maximum time in milliseconds a job can run before being considered failed.
+   * Jobs that exceed this timeout will be retried or moved to failed state.
+   *
+   * @default 30000 (30 seconds)
+   * @example 60000 // 1 minute timeout
+   * @example 300000 // 5 minute timeout for long-running jobs
+   *
+   * **When to adjust:**
+   * - Long-running jobs: Increase (5-30 minutes)
+   * - Short jobs: Decrease (5-15 seconds) for faster failure detection
+   * - External API calls: Consider API timeout + buffer
+   * - Database operations: Consider query timeout + buffer
+   */
   jobTimeoutMs?: number;
+
+  /**
+   * Default maximum number of retry attempts for failed jobs.
+   * Can be overridden per job or per worker.
+   *
+   * @default 3
+   * @example 5 // Retry failed jobs up to 5 times
+   * @example 1 // Fail fast with minimal retries
+   *
+   * **When to adjust:**
+   * - Critical jobs: Increase (5-10) for more resilience
+   * - Non-critical jobs: Decrease (1-2) to fail faster
+   * - External API calls: Consider API reliability
+   * - Rate-limited services: Use lower values to avoid rate limit issues
+   */
   maxAttempts?: number;
+
+  /**
+   * Maximum number of groups to scan when looking for available jobs.
+   * Higher values may find more jobs but use more Redis resources.
+   *
+   * @default 20
+   * @example 50 // Scan more groups for better job distribution
+   * @example 10 // Reduce Redis load for simple queues
+   *
+   * **When to adjust:**
+   * - Many groups: Increase (50-100) for better job distribution
+   * - Few groups: Decrease (5-10) to reduce Redis overhead
+   * - High job volume: Increase for better throughput
+   * - Resource constraints: Decrease to reduce Redis load
+   */
   reserveScanLimit?: number;
+
+  /**
+   * Minimum delay in milliseconds between processing jobs from the same group.
+   * Ensures jobs within a group are processed in order and prevents rapid-fire processing.
+   *
+   * @default 0 (no delay)
+   * @example 1000 // 1 second delay between jobs in same group
+   * @example 2000 // 2 second delay for rate limiting
+   *
+   * **When to use:**
+   * - Rate limiting: Prevent overwhelming external APIs
+   * - Database constraints: Avoid overwhelming database connections
+   * - Ordering requirements: Ensure strict FIFO within groups
+   * - Resource protection: Prevent resource exhaustion
+   *
+   * **Important:** When using orderingDelayMs > 0, ensure schedulerIntervalMs is
+   * set lower than your delay to ensure timely job processing.
+   */
   orderingDelayMs?: number;
+
+  /**
+   * Number of completed jobs to keep in Redis for inspection and debugging.
+   * Older completed jobs are automatically removed to prevent memory growth.
+   *
+   * @default 0 (don't keep completed jobs)
+   * @example 10 // Keep last 10 completed jobs
+   * @example 100 // Keep last 100 for debugging
+   *
+   * **When to adjust:**
+   * - Debugging: Increase (10-100) to inspect recent completions
+   * - Monitoring: Keep some for operational insights
+   * - Memory constraints: Keep low (0-10) to minimize Redis memory usage
+   * - Audit requirements: Increase based on compliance needs
+   */
   keepCompleted?: number;
+
+  /**
+   * Number of failed jobs to keep in Redis for inspection and debugging.
+   * Older failed jobs are automatically removed to prevent memory growth.
+   *
+   * @default 0 (don't keep failed jobs)
+   * @example 50 // Keep last 50 failed jobs for analysis
+   * @example 200 // Keep more for debugging persistent failures
+   *
+   * **When to adjust:**
+   * - Error analysis: Increase (50-200) to analyze failure patterns
+   * - Debugging: Keep failed jobs to understand why they failed
+   * - Memory constraints: Keep low (0-20) to minimize Redis memory usage
+   * - Monitoring: Keep some for operational insights
+   */
   keepFailed?: number;
-  schedulerLockTtlMs?: number; // default: 1500ms - controls minimum repeat interval
+
+  /**
+   * Time-to-live in milliseconds for the scheduler lock.
+   * Prevents multiple workers from running scheduler operations simultaneously.
+   * Should be longer than your longest scheduler operation.
+   *
+   * @default 1500 (1.5 seconds)
+   * @example 3000 // 3 seconds for complex cron jobs
+   * @example 5000 // 5 seconds for heavy delayed job processing
+   *
+   * **When to adjust:**
+   * - Complex cron jobs: Increase if scheduler operations take longer
+   * - Many delayed jobs: Increase if promotion takes significant time
+   * - Fast operations: Decrease (1000ms) for quicker lock release
+   * - Multiple workers: Ensure TTL is longer than operation time
+   */
+  schedulerLockTtlMs?: number;
 };
 
+/**
+ * Configuration for repeating jobs
+ */
 export type RepeatOptions =
   | {
+      /**
+       * Repeat interval in milliseconds. Job will be created every N milliseconds.
+       *
+       * @example 60000 // Every minute
+       * @example 3600000 // Every hour
+       * @example 86400000 // Every day
+       *
+       * When to use:
+       * - Simple intervals: Use for regular, predictable schedules
+       * - High frequency: Good for sub-hour intervals
+       * - Performance: More efficient than cron for simple intervals
+       */
       every: number;
     }
   | {
+      /**
+       * Cron pattern for complex scheduling. Uses standard cron syntax with seconds.
+       * Format: second minute hour day month dayOfWeek
+       *
+       * When to use:
+       * - Complex schedules: Business hours, specific days, etc.
+       * - Low frequency: Good for daily, weekly, monthly schedules
+       * - Business logic: Align with business requirements
+       *
+       * Cron format uses standard syntax with seconds precision.
+       */
       pattern: string;
     };
 
+/**
+ * Options for adding a job to the queue
+ *
+ * @template T The type of data to store in the job
+ */
 export type AddOptions<T> = {
+  /**
+   * Group ID for this job. Jobs with the same groupId are processed sequentially (FIFO).
+   * Only one job per group can be processed at a time.
+   *
+   * @example 'user-123' // All jobs for user 123
+   * @example 'email-notifications' // All email jobs
+   * @example 'order-processing' // All order-related jobs
+   *
+   * **Best practices:**
+   * - Use meaningful group IDs (user ID, resource ID, etc.)
+   * - Keep group IDs consistent for related jobs
+   * - Avoid too many unique groups (can impact performance)
+   */
   groupId: string;
+
+  /**
+   * The data payload for this job. Can be any serializable data.
+   *
+   * @example { userId: 123, email: 'user@example.com' }
+   * @example { orderId: 'order-456', items: [...] }
+   * @example 'simple string data'
+   */
   data: T;
+
+  /**
+   * Custom ordering timestamp in milliseconds. Jobs are processed in orderMs order within each group.
+   * If not provided, uses current timestamp (Date.now()).
+   *
+   * @default Date.now()
+   * @example Date.now() + 5000 // Process 5 seconds from now
+   * @example 1640995200000 // Specific timestamp
+   *
+   * **When to use:**
+   * - Delayed processing: Set future timestamp
+   * - Priority ordering: Use lower timestamps for higher priority
+   * - Batch processing: Group related jobs with same timestamp
+   */
   orderMs?: number;
+
+  /**
+   * Maximum number of retry attempts for this specific job.
+   * Overrides the queue's default maxAttempts setting.
+   *
+   * @default queue.maxAttemptsDefault
+   * @example 5 // Retry this job up to 5 times
+   * @example 1 // Fail fast with no retries
+   *
+   * **When to override:**
+   * - Critical jobs: Increase retries
+   * - Non-critical jobs: Decrease retries
+   * - Idempotent operations: Can safely retry more
+   * - External API calls: Consider API reliability
+   */
   maxAttempts?: number;
+
+  /**
+   * Delay in milliseconds before this job becomes available for processing.
+   * Alternative to using orderMs for simple delays.
+   *
+   * @example 5000 // Process after 5 seconds
+   * @example 300000 // Process after 5 minutes
+   *
+   * **When to use:**
+   * - Simple delays: Use delay instead of orderMs
+   * - Rate limiting: Delay jobs to spread load
+   * - Retry backoff: Delay retry attempts
+   */
   delay?: number;
+
+  /**
+   * Specific time when this job should be processed.
+   * Can be a Date object or timestamp in milliseconds.
+   *
+   * @example new Date('2024-01-01T12:00:00Z')
+   * @example Date.now() + 3600000 // 1 hour from now
+   *
+   * **When to use:**
+   * - Scheduled processing: Process at specific time
+   * - Business hours: Schedule during working hours
+   * - Maintenance windows: Schedule during low-traffic periods
+   */
   runAt?: Date | number;
+
+  /**
+   * Configuration for repeating jobs (cron or interval-based).
+   * Creates a repeating job that generates new instances automatically.
+   *
+   * @example { every: 60000 } // Every minute
+   *
+   * When to use:
+   * - Periodic tasks: Regular cleanup, reports, etc.
+   * - Monitoring: Health checks, metrics collection
+   * - Maintenance: Regular database cleanup, cache warming
+   */
   repeat?: RepeatOptions;
-  jobId?: string; // Optional custom job ID for idempotence
+
+  /**
+   * Custom job ID for idempotence. If a job with this ID already exists,
+   * the new job will be ignored (idempotent behavior).
+   *
+   * @example 'user-123-email-welcome'
+   * @example 'order-456-payment-process'
+   *
+   * **When to use:**
+   * - Idempotent operations: Prevent duplicate processing
+   * - External system integration: Use external IDs
+   * - Retry scenarios: Ensure same job isn't added multiple times
+   * - Deduplication: Prevent duplicate jobs from being created
+   */
+  jobId?: string;
 };
 
 export type ReservedJob<T = any> = {
@@ -170,7 +446,9 @@ export class Queue<T = any> {
     } else if (opts.runAt !== undefined) {
       const runAtTimestamp =
         opts.runAt instanceof Date ? opts.runAt.getTime() : opts.runAt;
-      delayUntil = Math.max(runAtTimestamp, now); // Don't allow past dates
+      // Clamp past dates to now, but subtract 100ms to ensure it's definitely in the past
+      // relative to Redis TIME used in the Lua script (accounts for network latency, etc.)
+      delayUntil = Math.max(runAtTimestamp, now - 100); // Don't allow past dates
     }
 
     // Handle undefined data by converting to null for consistent JSON serialization
@@ -912,17 +1190,9 @@ return 1
         );
       }
 
-      // Try to reserve directly from the specific group first to reduce contention
+      // Try to reserve atomically from the specific group to eliminate race conditions
       const reserveStart = Date.now();
-      let job = await this.reserveFromGroup(groupId);
-
-      if (!job) {
-        // Group might be empty or locked
-        // NOTE: reserve-from-group.lua already re-adds locked groups to :ready
-        // So we should NOT re-add here to avoid duplicates that cause BZPOPMIN spinning
-        // Just try a general reserve to pick from other available groups
-        job = await this.reserve();
-      }
+      const job = await this.reserveAtomic(groupId);
       const reserveDuration = Date.now() - reserveStart;
 
       if (job) {
@@ -965,6 +1235,7 @@ return 1
 
   /**
    * Reserve a job from a specific group (optimized for blocking operations)
+   * @deprecated Use reserveAtomic() instead to avoid race conditions
    */
   async reserveFromGroup(groupId: string): Promise<ReservedJob<T> | null> {
     const now = Date.now();
@@ -980,6 +1251,52 @@ return 1
         String(this.orderingDelayMs || 0),
       ],
     );
+    if (!result) return null;
+
+    // Parse the delimited string response (same format as regular reserve)
+    const parts = result.split('||DELIMITER||');
+    if (parts.length < 10) return null;
+
+    const [
+      id,
+      groupIdRaw,
+      data,
+      attempts,
+      maxAttempts,
+      seq,
+      timestamp,
+      orderMs,
+      score,
+      deadline,
+    ] = parts;
+
+    return {
+      id,
+      groupId: groupIdRaw,
+      data: JSON.parse(data),
+      attempts: parseInt(attempts, 10),
+      maxAttempts: parseInt(maxAttempts, 10),
+      seq: parseInt(seq, 10),
+      timestamp: parseInt(timestamp, 10),
+      orderMs: parseInt(orderMs, 10),
+      score: parseFloat(score),
+      deadlineAt: parseInt(deadline, 10),
+    };
+  }
+
+  /**
+   * Reserve a job from a specific group atomically (eliminates race conditions)
+   */
+  async reserveAtomic(groupId: string): Promise<ReservedJob<T> | null> {
+    const now = Date.now();
+
+    const result = await evalScript<string | null>(this.r, 'reserve-atomic', [
+      this.ns,
+      String(now),
+      String(this.vt),
+      String(groupId),
+      String(this.orderingDelayMs || 0),
+    ]);
     if (!result) return null;
 
     // Parse the delimited string response (same format as regular reserve)

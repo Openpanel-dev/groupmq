@@ -73,22 +73,181 @@ class TypedEventEmitter<
   }
 }
 
-// New API: pass an existing Queue instance; keep old options for BC
+/**
+ * Configuration options for a GroupMQ Worker
+ *
+ * @template T The type of data stored in jobs
+ */
 export type WorkerOptions<T> = {
+  /** The queue instance this worker will process jobs from */
   queue: Queue<T>;
+
+  /**
+   * Optional worker name for logging and identification
+   * @default queue.name
+   */
   name?: string;
+
+  /**
+   * The function that processes jobs. Must be async and handle job failures gracefully.
+   * @param job The reserved job to process
+   * @returns Promise that resolves when job is complete
+   */
   handler: (job: ReservedJob<T>) => Promise<unknown>;
-  heartbeatMs?: number; // default: queue.jobTimeoutMs/3
+
+  /**
+   * Heartbeat interval in milliseconds to keep jobs alive during processing.
+   * Prevents jobs from timing out during long-running operations.
+   *
+   * @default Math.max(1000, queue.jobTimeoutMs / 3)
+   * @example 5000 // Heartbeat every 5 seconds
+   *
+   * **When to adjust:**
+   * - Long-running jobs: Increase to reduce Redis overhead
+   * - Short jobs: Decrease for faster timeout detection
+   * - High job volume: Increase to reduce Redis commands
+   */
+  heartbeatMs?: number;
+
+  /**
+   * Error handler called when job processing fails or worker encounters errors
+   * @param err The error that occurred
+   * @param job The job that failed (if applicable)
+   */
   onError?: (err: unknown, job?: ReservedJob<T>) => void;
-  maxAttempts?: number; // worker-level cap (defaults to queue.maxAttemptsDefault)
+
+  /**
+   * Maximum number of retry attempts for failed jobs at the worker level.
+   * This overrides the queue's default maxAttempts setting.
+   *
+   * @default queue.maxAttemptsDefault
+   * @example 5 // Retry failed jobs up to 5 times
+   *
+   * **When to adjust:**
+   * - Critical jobs: Increase for more retries
+   * - Non-critical jobs: Decrease to fail faster
+   * - External API calls: Consider network reliability
+   */
+  maxAttempts?: number;
+
+  /**
+   * Backoff strategy for retrying failed jobs. Determines delay between retries.
+   *
+   * @default Exponential backoff with jitter (500ms, 1s, 2s, 4s, 8s, 16s, 30s max)
+   * @example (attempt) => Math.min(10000, attempt * 1000) // Linear backoff
+   *
+   * **When to adjust:**
+   * - Rate-limited APIs: Use longer delays
+   * - Database timeouts: Use shorter delays
+   * - External services: Consider their retry policies
+   */
   backoff?: BackoffStrategy;
-  enableCleanup?: boolean; // default: true
-  cleanupIntervalMs?: number; // default: 60s
-  schedulerIntervalMs?: number; // default: 1s
-  blockingTimeoutSec?: number; // default: 5s
-  atomicCompletion?: boolean; // default: true
+
+  /**
+   * Whether to enable automatic cleanup of expired and completed jobs.
+   * Cleanup removes old jobs to prevent Redis memory growth.
+   *
+   * @default true
+   * @example false // Disable if you handle cleanup manually
+   *
+   * **When to disable:**
+   * - Manual cleanup: If you have your own cleanup process
+   * - Job auditing: If you need to keep all job history
+   * - Development: For debugging job states
+   */
+  enableCleanup?: boolean;
+
+  /**
+   * Interval in milliseconds between cleanup operations.
+   * Cleanup removes expired jobs and trims completed/failed job retention.
+   *
+   * @default 300000 (5 minutes)
+   * @example 600000 // Cleanup every 10 minutes
+   *
+   * **When to adjust:**
+   * - High job volume: Increase to reduce Redis overhead
+   * - Low job volume: Decrease for more frequent cleanup
+   * - Memory constraints: Decrease to prevent Redis memory growth
+   * - Job retention needs: Adjust based on keepCompleted/keepFailed settings
+   */
+  cleanupIntervalMs?: number;
+
+  /**
+   * Interval in milliseconds between scheduler operations.
+   * Scheduler promotes delayed jobs and processes cron/repeating jobs.
+   *
+   * @default 2500 (2.5 seconds)
+   * @example 1000 // For fast cron jobs (every minute or less)
+   * @example 10000 // For slow cron jobs (hourly or daily)
+   *
+   * **When to adjust:**
+   * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
+   * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
+   * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
+   * - High orderingDelayMs: Ensure scheduler runs more frequently than your delay
+   */
+  schedulerIntervalMs?: number;
+
+  /**
+   * Maximum time in seconds to wait for new jobs when queue is empty.
+   * Shorter timeouts make workers more responsive but use more Redis resources.
+   *
+   * @default 2
+   * @example 1 // More responsive, higher Redis usage
+   * @example 5 // Less responsive, lower Redis usage
+   *
+   * **When to adjust:**
+   * - High job volume: Decrease (1-2s) for faster job pickup
+   * - Low job volume: Increase (3-5s) to reduce Redis overhead
+   * - Real-time requirements: Decrease for lower latency
+   * - Resource constraints: Increase to reduce Redis load
+   */
+  blockingTimeoutSec?: number;
+
+  /**
+   * Whether to use atomic completion for better performance and consistency.
+   * Atomic completion completes a job and reserves the next job from the same group in one operation.
+   *
+   * @default true
+   * @example false // Disable for debugging or compatibility
+   *
+   * **When to disable:**
+   * - Debugging: To isolate completion vs reservation issues
+   * - Compatibility: If you have custom completion logic
+   * - Single concurrency: Less benefit with concurrency=1
+   */
+  atomicCompletion?: boolean;
+
+  /**
+   * Logger configuration for worker operations and debugging.
+   *
+   * @default false (no logging)
+   * @example true // Enable basic logging
+   * @example customLogger // Use custom logger instance
+   *
+   * **When to enable:**
+   * - Development: For debugging job processing
+   * - Production monitoring: For operational insights
+   * - Troubleshooting: When investigating performance issues
+   */
   logger?: LoggerInterface | true;
-  concurrency?: number; // default: 1
+
+  /**
+   * Number of jobs this worker can process concurrently.
+   * Higher concurrency increases throughput but uses more memory and CPU.
+   *
+   * @default 1
+   * @example 4 // Process 4 jobs simultaneously
+   * @example 8 // For CPU-intensive jobs on multi-core systems
+   *
+   * **When to adjust:**
+   * - CPU-bound jobs: Set to number of CPU cores
+   * - I/O-bound jobs: Set to 2-4x number of CPU cores
+   * - Memory constraints: Lower concurrency to reduce memory usage
+   * - High job volume: Increase for better throughput
+   * - Single-threaded requirements: Keep at 1
+   */
+  concurrency?: number;
 };
 
 const defaultBackoff: BackoffStrategy = (attempt) => {
@@ -145,8 +304,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     }
 
     this.q = opts.queue;
-    this.name =
-      opts.name ?? `worker-${Math.random().toString(36).substr(2, 9)}`;
+    this.name = opts.name ?? this.q.name;
     this.logger =
       typeof opts.logger === 'object'
         ? opts.logger
@@ -159,9 +317,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.maxAttempts = opts.maxAttempts ?? this.q.maxAttemptsDefault ?? 3;
     this.backoff = opts.backoff ?? defaultBackoff;
     this.enableCleanup = opts.enableCleanup ?? true;
-    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000;
-    this.schedulerMs = opts.schedulerIntervalMs ?? 1000;
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s like BullMQ's drainDelay
+    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for production
+    this.schedulerMs = opts.schedulerIntervalMs ?? 2500; // 2.5 seconds for better efficiency
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 2; // 2s for better responsiveness
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
@@ -253,13 +411,34 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     while (!this.stopping || asyncFifoQueue.numTotal() > 0) {
       try {
-        // Phase 1: Fetch jobs sequentially until we reach concurrency capacity
+        // Phase 1: Fetch jobs efficiently until we reach concurrency capacity
         while (!this.stopping && asyncFifoQueue.numTotal() < this.concurrency) {
           this.blockingStats.totalBlockingCalls++;
 
           this.logger.debug(
             `Fetching job (call #${this.blockingStats.totalBlockingCalls}, queue: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
           );
+
+          // Try batch reserve first for better efficiency (when concurrency > 1)
+          if (this.concurrency > 1 && asyncFifoQueue.numTotal() === 0) {
+            const batchSize = Math.min(this.concurrency, 8); // Cap at 8 for efficiency
+            const batchJobs = await this.q.reserveBatch(batchSize);
+
+            if (batchJobs.length > 0) {
+              this.logger.debug(`Batch reserved ${batchJobs.length} jobs`);
+              for (const job of batchJobs) {
+                asyncFifoQueue.add(Promise.resolve(job));
+              }
+              // Reset counters for successful batch
+              connectionRetries = 0;
+              blockUntil = 0;
+              this.lastJobPickupTime = Date.now();
+              this.blockingStats.consecutiveEmptyReserves = 0;
+              this.blockingStats.lastActivityTime = Date.now();
+              this.emptyReserveBackoffMs = 0;
+              continue; // Skip individual reserve
+            }
+          }
 
           const fetchedJob = this.retryIfFailed(
             () =>
@@ -801,9 +980,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     let hbTimer: NodeJS.Timeout | undefined;
     const startHeartbeat = () => {
+      // More conservative heartbeat: use 1/4 of job timeout instead of 1/2
+      // This reduces Redis calls while still providing safety
       const minInterval = Math.max(
         this.hbMs,
-        Math.floor((this.q.jobTimeoutMs || 30000) / 2),
+        Math.floor((this.q.jobTimeoutMs || 30000) / 4),
       );
       hbTimer = setInterval(async () => {
         try {

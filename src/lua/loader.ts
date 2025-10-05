@@ -8,6 +8,7 @@ export type ScriptName =
   | 'reserve'
   | 'reserve-batch'
   | 'reserve-from-group'
+  | 'reserve-atomic'
   | 'complete'
   | 'complete-and-reserve-next'
   | 'retry'
