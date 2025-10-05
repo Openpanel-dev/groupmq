@@ -1,3 +1,10 @@
+## [1.0.0-next.14](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.13...v1.0.0-next.14) (2025-10-05)
+
+
+### Bug Fixes
+
+* use reserve atomic to avoid workers grabbing same jobs ([2ef73f3](https://github.com/Openpanel-dev/groupmq/commit/2ef73f3a2a80ec51d869b913e60e02ff5f120567))
+
 ## [1.0.0-next.13](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.12...v1.0.0-next.13) (2025-10-04)
 
 
