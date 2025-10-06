@@ -1,4 +1,4 @@
--- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted
+-- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, orderingDelayMs (scheduler buffer window)
 local ns = ARGV[1]
 local groupId = ARGV[2]
 local data = ARGV[3]
@@ -7,6 +7,7 @@ local orderMs = tonumber(ARGV[5])
 local delayUntil = tonumber(ARGV[6])
 local jobId = ARGV[7]
 local keepCompleted = tonumber(ARGV[8]) or 0
+local orderingDelayMs = tonumber(ARGV[9]) or 0
 
 local readyKey = ns .. ":ready"
 local delayedKey = ns .. ":delayed"
@@ -103,18 +104,53 @@ redis.call("HMSET", jobKey,
 -- Track group membership (idempotent)
 redis.call("SADD", groupsKey, groupId)
 
+-- Add job to group's sorted set first
+redis.call("ZADD", gZ, score, jobId)
+
 if delayUntil > 0 and delayUntil > now then
+  -- Job is delayed, add to delayed set
   redis.call("ZADD", delayedKey, delayUntil, jobId)
-  redis.call("ZADD", gZ, score, jobId)
   return jobId
+end
+
+-- Job is not delayed, determine if group should be ready or buffering
+-- Only use buffering if orderingDelayMs is meaningful (>= 100ms)
+-- Below 100ms, the overhead isn't worth it and sorted set ordering is sufficient
+if orderingDelayMs >= 100 then
+  -- Check if group is currently locked (actively processing)
+  local lockKey = ns .. ":lock:" .. groupId
+  local isLocked = redis.call("EXISTS", lockKey)
+  
+  if isLocked == 1 then
+    -- Group is actively processing, don't buffer - the group will be re-added to ready
+    -- when the current job completes. The sorted set already maintains order.
+    -- Don't add to ready queue, let complete script handle it
+  else
+    -- Group is not processing, check if we should buffer
+    local groupBufferKey = ns .. ":buffer:" .. groupId
+    local bufferStartTime = redis.call("GET", groupBufferKey)
+    
+    if not bufferStartTime then
+      -- This is the first job arriving for an idle group
+      -- Start buffering window
+      redis.call("SET", groupBufferKey, tostring(now), "PX", orderingDelayMs + 1000)
+      
+      -- Add group to buffering set with score = when it should become ready
+      local readyAt = now + orderingDelayMs
+      redis.call("ZADD", ns .. ":buffering", readyAt, groupId)
+    end
+    -- If bufferStartTime exists, the group is already buffering - just accumulate jobs
+  end
 else
-  redis.call("ZADD", gZ, score, jobId)
+  -- No buffering or orderingDelayMs too small - rely on sorted set ordering
+  -- Make group ready immediately if this is the head job
   local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
   if head and #head >= 2 then
     local headScore = tonumber(head[2])
     redis.call("ZADD", readyKey, headScore, groupId)
   end
-  return jobId
 end
+
+return jobId
 
 

@@ -106,4 +106,10 @@ await worker.close(30_000)
 - On failure: applies backoff, emits `failed`, records attempt/final failure, and dead-letters when attempts are exhausted
 - Attempts atomic in-group chaining with `completeAndReserveNext` to minimize reordering
 - When `concurrency > 1`: processes multiple jobs simultaneously while respecting per-group FIFO constraints
+- Handles ordering methods:
+  - `'none'`: Processes jobs immediately in `orderMs` order
+  - `'scheduler'`: Respects Redis buffering window (requires scheduler enabled)
+  - `'in-memory'`: Collects jobs during grace period before processing batch
+
+See the [Ordering Methods guide](/docs/ordering-methods) for configuration details.
 

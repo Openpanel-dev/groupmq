@@ -1,42 +1,16 @@
--- argv: ns, completedJobId, groupId, now, vt, orderingDelayMs, keepCompleted
+-- Complete a job and atomically reserve the next job from the same group
+-- Does NOT record job metadata - that's handled separately by record-job-result.lua
+-- argv: ns, completedJobId, groupId, now, vt, orderingDelayMs
 local ns = ARGV[1]
 local completedJobId = ARGV[2]
 local gid = ARGV[3]
 local now = tonumber(ARGV[4])
 local vt = tonumber(ARGV[5])
 local orderingDelayMs = tonumber(ARGV[6]) or 0
-local keepCompleted = tonumber(ARGV[7]) or 0
 
+-- Remove from processing
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
 redis.call("ZREM", ns .. ":processing", completedJobId)
-local jobKey = ns .. ":job:" .. completedJobId
-local completedKey = ns .. ":completed"
-
--- Handle retention based on keepCompleted
-if keepCompleted > 0 then
-  -- Add to completed set and handle retention
-  redis.call("HSET", jobKey, "status", "completed", "finishedOn", tostring(now))
-  redis.call("ZADD", completedKey, now, completedJobId)
-  
-  -- Trim old entries if we exceed the limit
-  local zcount = redis.call("ZCARD", completedKey)
-  local toRemove = zcount - keepCompleted
-  if toRemove > 0 then
-    local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
-    if #oldIds > 0 then
-      redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
-      for i = 1, #oldIds do
-        local oldId = oldIds[i]
-        redis.call("DEL", ns .. ":job:" .. oldId)
-        redis.call("DEL", ns .. ":unique:" .. oldId)
-      end
-    end
-  end
-else
-  -- keepCompleted == 0: Delete job immediately, don't add to completed set
-  redis.call("DEL", jobKey)
-  redis.call("DEL", ns .. ":unique:" .. completedJobId)
-end
 
 local lockKey = ns .. ":lock:" .. gid
 local val = redis.call("GET", lockKey)
@@ -53,6 +27,7 @@ if not zpop or #zpop == 0 then
   if jobCount == 0 then
     redis.call("DEL", gZ)
     redis.call("SREM", ns .. ":groups", gid)
+    redis.call("ZREM", ns .. ":ready", gid)
   end
   -- No next job; retention trimming already handled above
   return nil

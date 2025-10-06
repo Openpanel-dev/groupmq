@@ -1,10 +1,11 @@
 -- Atomic reserve operation that checks lock and reserves in one operation
--- argv: ns, nowEpochMs, vtMs, targetGroupId, orderingDelayMs
+-- argv: ns, nowEpochMs, vtMs, targetGroupId, orderingDelayMs, allowedJobId (optional)
 local ns = ARGV[1]
 local now = tonumber(ARGV[2])
 local vt = tonumber(ARGV[3])
 local targetGroupId = ARGV[4]
 local orderingDelayMs = tonumber(ARGV[5]) or 0
+local allowedJobId = ARGV[6] -- If provided, allow reserve if lock matches this job ID
 
 local readyKey = ns .. ":ready"
 local gZ = ns .. ":g:" .. targetGroupId
@@ -15,16 +16,36 @@ if redis.call("GET", ns .. ":paused") then
   return nil
 end
 
--- Try to atomically set lock first (this prevents race conditions)
-local lockSet = redis.call("SET", lockKey, "reserving", "PX", vt, "NX")
-if not lockSet then
-  -- Group is locked by another worker, re-add to ready and return
-  local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-  if head and #head >= 2 then
-    local headScore = tonumber(head[2])
-    redis.call("ZADD", readyKey, headScore, targetGroupId)
+-- Check if group is locked
+local currentLock = redis.call("GET", lockKey)
+
+if currentLock then
+  -- If allowedJobId is provided and matches the lock, we can proceed (grace collection)
+  if allowedJobId and currentLock == allowedJobId then
+    -- Lock belongs to us, we can reserve more jobs from this group
+    -- Extend the lock TTL since we're still working with this group
+    redis.call("PEXPIRE", lockKey, vt)
+  else
+    -- Group is locked by another worker or different job, re-add to ready and return
+    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+    if head and #head >= 2 then
+      local headScore = tonumber(head[2])
+      redis.call("ZADD", readyKey, headScore, targetGroupId)
+    end
+    return nil
   end
-  return nil
+else
+  -- No lock exists, try to atomically set it
+  local lockSet = redis.call("SET", lockKey, "reserving", "PX", vt, "NX")
+  if not lockSet then
+    -- Another worker grabbed the lock between our check and set
+    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+    if head and #head >= 2 then
+      local headScore = tonumber(head[2])
+      redis.call("ZADD", readyKey, headScore, targetGroupId)
+    end
+    return nil
+  end
 end
 
 -- Try to get a job from the group
@@ -54,8 +75,14 @@ if orderingDelayMs > 0 and orderMs then
   end
 end
 
--- Update lock with actual job ID
-redis.call("SET", lockKey, id, "PX", vt)
+-- Update lock with actual job ID (unless we're in grace collection mode)
+if allowedJobId then
+  -- Keep the original lock during grace collection
+  redis.call("PEXPIRE", lockKey, vt)
+else
+  -- Normal reserve: update lock to this job's ID
+  redis.call("SET", lockKey, id, "PX", vt)
+end
 
 local procKey = ns .. ":processing:" .. id
 local deadline = now + vt

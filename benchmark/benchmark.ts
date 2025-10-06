@@ -472,17 +472,16 @@ class GroupMQAdapter extends QueueAdapter {
     this.queue = new GroupMQ.Queue({
       redis: this.redis.duplicate(),
       namespace: this.namespace,
-      orderingDelayMs: 5000,
       keepCompleted: 1,
     });
   }
 
   async enqueueJobs(count: number): Promise<void> {
     console.log(`Enqueueing ${count} jobs...`);
-
+    const totalNumOfGroups = this.opts.jobs * 0.4;
     for (let i = 0; i < count; i++) {
       await this.queue.add({
-        groupId: `group-${i % this.opts.workers}`,
+        groupId: `group-${i % totalNumOfGroups}`,
         data: {
           id: `job-${i}`,
           enqueuedAt: Date.now(),
@@ -640,7 +639,7 @@ class GroupMQAdapter extends QueueAdapter {
       const now = Date.now();
       if (now - lastStatsCheck > 500) {
         const stats = await this.queue.getJobCounts();
-        const groups = await this.queue.getUniqueGroupsCount();
+        // const groups = await this.queue.getUniqueGroupsCount();
 
         if (stats.active === 0 && stats.waiting === 0 && stats.delayed === 0) {
           console.log('✅ All jobs completed');
@@ -649,7 +648,7 @@ class GroupMQAdapter extends QueueAdapter {
 
         if ((now - startTime) % 2000 < 1000) {
           console.log(
-            `⏳ Progress: ${this.completedJobs.length} completed, ${stats.active} active, ${stats.waiting} waiting, ${stats.delayed} delayed, ${groups}`,
+            `⏳ Progress: ${this.completedJobs.length} completed, ${stats.active} active, ${stats.waiting} waiting, ${stats.delayed} delayed`,
           );
         }
         lastStatsCheck = now;

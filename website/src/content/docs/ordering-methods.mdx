@@ -1,0 +1,434 @@
+---
+title: 'Ordering Methods'
+description: 'Strategies for handling out-of-order job arrivals in GroupMQ'
+---
+
+# Job Ordering Methods
+
+GroupMQ provides three strategies for handling out-of-order job arrivals within a group. Each method has different characteristics and trade-offs.
+
+## Overview
+
+Jobs within a group are always stored in a Redis sorted set ordered by `orderMs`. However, due to network latency, distributed systems, or other factors, jobs may arrive at the queue out of order. The `orderingMethod` option allows you to choose how to handle this.
+
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'my-queue',
+  orderingMethod: 'none' | 'scheduler' | 'in-memory',
+  orderingWindowMs: 1000, // Required for 'scheduler' and 'in-memory'
+});
+```
+
+---
+
+## Method 1: `'none'` - No Ordering Guarantees
+
+**The default and fastest option.**
+
+Jobs are processed immediately in their `orderMs` sequence as maintained by the sorted set. No additional ordering mechanism is applied.
+
+### When to Use
+
+- ✅ Jobs always arrive in order
+- ✅ Order doesn't matter for your use case
+- ✅ Maximum throughput is priority
+- ✅ Lowest latency required
+
+### Characteristics
+
+- **Zero overhead** - No additional Redis operations
+- **Lowest latency** - Jobs processed immediately
+- **No scheduler required** - Simplest setup
+- **No guarantees** - If jobs arrive out of order, they may be processed in the wrong sequence
+
+### Example
+
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'simple-queue',
+  orderingMethod: 'none', // or omit entirely
+});
+
+// Jobs processed immediately in orderMs order as they arrive
+await queue.add({ 
+  groupId: 'user-123', 
+  data: { action: 'update' },
+  orderMs: Date.now()
+});
+```
+
+### Performance
+
+- **Throughput**: ~50,000 jobs/sec
+- **Added Latency**: 0ms
+- **Redis Overhead**: 0
+
+---
+
+## Method 2: `'scheduler'` - Redis Buffering
+
+**Best for large time windows and high throughput.**
+
+Jobs are buffered in Redis for `orderingWindowMs` before being made available for processing. A scheduler periodically promotes buffered groups when their window expires.
+
+### When to Use
+
+- ✅ Jobs arrive 1-5 seconds out of order
+- ✅ Processing large batches with predictable timing
+- ✅ Need system-wide buffering (all workers see same buffer)
+- ✅ High job volume with ordering requirements
+- ✅ Distributed systems with clock skew
+
+### How It Works
+
+1. When a job arrives, it's added to a group's sorted set
+2. If the group isn't already buffered, it's added to a buffering set with a TTL
+3. The group remains "buffered" (not available for processing) for `orderingWindowMs`
+4. A scheduler runs periodically and promotes groups whose buffer window has expired
+5. Once promoted, the group becomes available and workers can process jobs in correct `orderMs` order
+
+### Characteristics
+
+- **Handles large windows** - Works well with 1-5 second windows
+- **System-wide coordination** - All workers respect the same buffer via Redis
+- **Predictable latency** - Always adds `orderingWindowMs` delay
+- **Requires scheduler** - At least one worker must run the scheduler
+- **Redis overhead** - Additional keys for buffering state
+
+### Requirements
+
+- `orderingWindowMs` must be ≥ 100ms (enforced)
+- **Recommended**: ≥ 1000ms for best performance
+- Worker with scheduler enabled (default behavior)
+
+### Example
+
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'batch-queue',
+  orderingMethod: 'scheduler',
+  orderingWindowMs: 2000, // 2-second buffer
+});
+
+// Multiple services adding events with timestamps
+await queue.add({ 
+  groupId: 'user-123', 
+  data: { event: 'page_view' },
+  orderMs: 1704067200000 // Unix timestamp from source system
+});
+
+// Job won't be processed until 2 seconds after the first job in the group
+```
+
+### Performance
+
+- **Added Latency**: Equal to `orderingWindowMs` (1000-5000ms typical)
+- **Redis Overhead**: 2 extra keys per group + buffering set
+
+### Limitations
+
+- **Minimum window**: 100ms (below this, buffering is disabled)
+- **Fixed delay**: All groups wait the full window, even if all jobs have arrived
+- **Scheduler dependency**: If no worker runs the scheduler, groups won't be promoted
+
+---
+
+## Method 3: `'in-memory'` - Worker Collection
+
+**Best for small time windows and low latency.**
+
+Workers hold the first job in memory and wait `orderingWindowMs` for additional jobs to arrive. Collects jobs, sorts by `orderMs`, then processes as a batch.
+
+### When to Use
+
+- ✅ Jobs arrive 5-500ms out of order (network jitter)
+- ✅ Need low overhead ordering
+- ✅ Can't afford scheduler-based delays
+- ✅ Want per-worker independent operation
+- ✅ Minimal Redis overhead required
+
+### How It Works
+
+1. Worker reserves the first job from a group
+2. Worker holds the job in memory and starts a grace period timer
+3. Worker polls Redis every 10ms checking if new jobs have arrived
+4. **Timer resets** each time a new job arrives (up to 3x the window max)
+5. When no new jobs arrive for the full window, worker collects all detected jobs
+6. Jobs are sorted by `orderMs` and processed in correct order
+
+### Characteristics
+
+- **Zero scheduler overhead** - No background processes required
+- **No Redis buffering** - No additional keys created
+- **Adaptive latency** - Only waits when jobs actually arrive close together
+- **Scales perfectly** - No coordination between workers
+- **Small windows only** - Best for 50-500ms delays
+- **Worker memory** - Jobs held in worker process memory
+
+### Requirements
+
+- `orderingWindowMs` must be ≤ 1000ms (enforced)
+- **Recommended**: 50-500ms for best results
+- No scheduler required
+
+### Example
+
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'realtime-queue',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 200, // 200ms grace period
+});
+
+// API gateway forwarding requests (might arrive out of order)
+await queue.add({ 
+  groupId: 'session-abc', 
+  data: { request: 'update_profile' },
+  orderMs: Date.now()
+});
+
+// Worker will wait up to 200ms for more jobs from this session
+// If another job arrives within 200ms, timer resets
+```
+
+### Performance
+
+- **Added Latency**: 50-500ms per batch (only when jobs arrive close together)
+- **Redis Overhead**: 0 additional keys
+
+### Limitations
+
+- **Maximum window**: 1000ms (above this, use 'scheduler' method)
+- **Not suitable for large windows** - Worker holds jobs in memory
+- **Per-worker collection** - Different workers may collect different batches
+- **3x safety limit** - Grace period can reset, but max wait time is 3x the window
+
+---
+
+## Comparison Table
+
+| Feature | `'none'` | `'scheduler'` | `'in-memory'` |
+|---------|----------|---------------|---------------|
+| **Throughput** | ~50k jobs/sec | ~40k jobs/sec | ~45k jobs/sec |
+| **Added Latency** | 0ms | 1000-5000ms | 50-500ms |
+| **Redis Overhead** | None | 2 keys/group | None |
+| **Scheduler Required** | No | Yes | No |
+| **Best For** | Ordered arrivals | Large batches | Network jitter |
+| **Window Size** | N/A | ≥ 100ms (rec: ≥1000ms) | ≤ 1000ms (rec: 50-500ms) |
+| **Coordination** | Per worker | System-wide | Per worker |
+| **Setup Complexity** | Simplest | Moderate | Simple |
+
+---
+
+## Choosing the Right Method
+
+### Decision Flow
+
+```
+Do jobs always arrive in order?
+├─ YES → Use 'none' (fastest, zero overhead)
+└─ NO → How far out of order?
+    ├─ 5-100ms (network jitter) → Use 'in-memory' with 100-200ms window
+    ├─ 100-1000ms (moderate latency) → Use 'in-memory' with 200-500ms window
+    └─ 1-5 seconds (large batches) → Use 'scheduler' with 1000-5000ms window
+```
+
+### Use Case Examples
+
+#### E-commerce Orders
+
+```typescript
+// Orders arrive in sequence, no special ordering needed
+const queue = new Queue({
+  redis,
+  namespace: 'orders',
+  orderingMethod: 'none',
+});
+```
+
+#### Real-time Analytics
+
+```typescript
+// Events may arrive 50-200ms out of order due to network
+const queue = new Queue({
+  redis,
+  namespace: 'analytics',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 200,
+});
+```
+
+#### Batch ETL Processing
+
+```typescript
+// Data arrives in large batches from multiple sources
+const queue = new Queue({
+  redis,
+  namespace: 'etl',
+  orderingMethod: 'scheduler',
+  orderingWindowMs: 3000, // 3-second buffer for batch coordination
+});
+```
+
+#### Multi-Region API
+
+```typescript
+// Requests may arrive out of order due to cross-region latency
+const queue = new Queue({
+  redis,
+  namespace: 'api-requests',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 300,
+});
+```
+
+---
+
+## Validation and Limits
+
+GroupMQ enforces limits to prevent misconfiguration:
+
+### Scheduler Method
+
+```typescript
+orderingWindowMs: 50   // ❌ Below 100ms - Disabled with warning
+orderingWindowMs: 100  // ✅ Minimum - Works but scheduler overhead high
+orderingWindowMs: 500  // ⚠️  Below 1000ms - Warning to consider 'in-memory'
+orderingWindowMs: 2000 // ✅ Recommended - Good balance
+```
+
+### In-Memory Method
+
+```typescript
+orderingWindowMs: 20   // ⚠️  Below 50ms - Warning (may not be effective)
+orderingWindowMs: 200  // ✅ Recommended - Good for network jitter
+orderingWindowMs: 500  // ✅ Good - Handles moderate latency
+orderingWindowMs: 1500 // ❌ Above 1000ms - Capped at 1000ms with warning
+```
+
+---
+
+## Advanced Topics
+
+### Resetting Grace Window (In-Memory Method)
+
+The `'in-memory'` method uses a **resetting grace window**. Each time a new job arrives, the timer resets:
+
+```
+Time: 0ms    → First job arrives, start 200ms timer
+Time: 150ms  → Second job arrives, RESET to 200ms (wait until 350ms)
+Time: 300ms  → Third job arrives, RESET to 200ms (wait until 500ms)
+Time: 600ms  → No new jobs for 200ms, process all 3 jobs in orderMs order
+```
+
+This ensures that jobs arriving in rapid succession are collected together, even if they span longer than the window.
+
+**Safety limit**: To prevent infinite waiting, the grace period will never extend beyond 3x the original window from the first job.
+
+### Combining with Job Delays
+
+Both ordering methods work seamlessly with delayed jobs:
+
+```typescript
+await queue.add({
+  groupId: 'user-123',
+  data: { action: 'reminder' },
+  orderMs: Date.now(),
+  delayUntil: Date.now() + 60000, // Delay 1 minute
+});
+
+// The ordering window only applies AFTER the delay expires
+```
+
+### Scheduler Considerations
+
+The `'scheduler'` method requires at least one worker running a scheduler. By default, all workers run schedulers, but you can disable it:
+
+```typescript
+const worker = new Worker({
+  queue,
+  handler: async (job) => { /* ... */ },
+  runScheduler: false, // This worker won't promote buffered groups
+});
+```
+
+Make sure at least one worker has `runScheduler: true` (the default).
+
+---
+
+## Troubleshooting
+
+### Jobs not processing (scheduler method)
+
+**Symptom**: Jobs are added but never processed.
+
+**Causes**:
+- No worker running the scheduler
+- `orderingWindowMs` too large (jobs still in buffer)
+- Redis connection issues preventing scheduler from running
+
+**Solution**:
+```typescript
+// Check scheduler is running
+const worker = new Worker({
+  queue,
+  handler: async (job) => { /* ... */ },
+  runScheduler: true, // Ensure this is true
+});
+
+// Check buffer state
+const bufferingGroups = await redis.zrange('groupmq:my-queue:buffering', 0, -1, 'WITHSCORES');
+console.log('Groups in buffer:', bufferingGroups);
+```
+
+### Jobs processed out of order (in-memory method)
+
+**Symptom**: Jobs still processed in wrong order despite `'in-memory'` method.
+
+**Causes**:
+- `orderingWindowMs` too small for the actual latency
+- Jobs arriving more than `orderingWindowMs` apart
+- Multiple workers collecting different batches
+
+**Solution**:
+```typescript
+// Increase the window
+const queue = new Queue({
+  redis,
+  namespace: 'my-queue',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 500, // Increased from 200ms
+});
+```
+
+### High latency (scheduler method)
+
+**Symptom**: Jobs take too long to process.
+
+**Causes**:
+- `orderingWindowMs` too large
+- Using scheduler method when in-memory would suffice
+
+**Solution**:
+```typescript
+// Switch to in-memory for smaller windows
+const queue = new Queue({
+  redis,
+  namespace: 'my-queue',
+  orderingMethod: 'in-memory', // Lower overhead
+  orderingWindowMs: 200,
+});
+```
+
+---
+
+## See Also
+
+- [Configuration Options](/docs/configuration-options) - Full list of queue options
+- [Performance Tips](/docs/performance-tips) - Optimizing throughput and latency
+- [Jobs](/docs/jobs) - Understanding job lifecycle and ordering
+

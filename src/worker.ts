@@ -176,7 +176,7 @@ export type WorkerOptions<T> = {
    * Interval in milliseconds between scheduler operations.
    * Scheduler promotes delayed jobs and processes cron/repeating jobs.
    *
-   * @default 2500 (2.5 seconds)
+   * @default Adaptive: min(5000ms, max(1000ms, schedulerBufferMs * 0.8)) with 1000ms minimum cap
    * @example 1000 // For fast cron jobs (every minute or less)
    * @example 10000 // For slow cron jobs (hourly or daily)
    *
@@ -184,7 +184,11 @@ export type WorkerOptions<T> = {
    * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
    * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
    * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
-   * - High orderingDelayMs: Ensure scheduler runs more frequently than your delay
+   * - Scheduler buffering (`orderingMethod: 'scheduler'`): Automatically adjusted to prevent ordering stalls
+   *
+   * **Important:** The scheduler interval is automatically capped at 80% of the scheduler buffer window
+   * (with a 1000ms minimum) to ensure buffered jobs are promoted promptly and don't cause
+   * ordering stalls, while preventing excessive Redis load from very frequent scheduler runs.
    */
   schedulerIntervalMs?: number;
 
@@ -286,7 +290,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private totalJobsProcessed = 0;
   private blockingStats = {
     totalBlockingCalls: 0,
-    totalBlockingTimeMs: 0,
     consecutiveEmptyReserves: 0,
     lastActivityTime: Date.now(),
   };
@@ -317,15 +320,40 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.maxAttempts = opts.maxAttempts ?? this.q.maxAttemptsDefault ?? 3;
     this.backoff = opts.backoff ?? defaultBackoff;
     this.enableCleanup = opts.enableCleanup ?? true;
-    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for production
-    this.schedulerMs = opts.schedulerIntervalMs ?? 2500; // 2.5 seconds for better efficiency
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 2; // 2s for better responsiveness
+    this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for high-concurrency production
+
+    // Ensure scheduler runs more frequently than ordering delay to prevent stalls
+    // But only if scheduler buffering is meaningful (>= 100ms)
+    const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
+    const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
+    const schedulerBufferMs = this.q.schedulerBufferMs || 0;
+    this.schedulerMs =
+      opts.schedulerIntervalMs ??
+      (schedulerBufferMs >= 100
+        ? Math.min(
+            defaultSchedulerMs,
+            Math.max(minSchedulerMs, schedulerBufferMs * 0.8),
+          )
+        : defaultSchedulerMs);
+
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s for high-concurrency production
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+  }
+
+  /**
+   * Add jitter to prevent thundering herd problems in high-concurrency environments
+   * @param baseInterval The base interval in milliseconds
+   * @param jitterPercent Percentage of jitter to add (0-1, default 0.1 for 10%)
+   * @returns The interval with jitter applied
+   */
+  private addJitter(baseInterval: number, jitterPercent = 0.1): number {
+    const jitter = Math.random() * baseInterval * jitterPercent;
+    return baseInterval + jitter;
   }
 
   private setupRedisEventHandlers() {
@@ -376,13 +404,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     // Start cleanup timer if enabled
     if (this.enableCleanup) {
       // Cleanup timer: only runs cleanup, not scheduler
+      // Add jitter to prevent all workers from running cleanup simultaneously
       this.cleanupTimer = setInterval(async () => {
         try {
           await this.q.cleanup();
         } catch (err) {
           this.onError?.(err);
         }
-      }, this.cleanupMs);
+      }, this.addJitter(this.cleanupMs));
 
       // Scheduler timer: promotes delayed jobs and processes cron jobs
       // Runs independently in the background, even when worker is blocked on BZPOPMIN
@@ -394,7 +423,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         } catch (_err) {
           // Ignore errors, this is best-effort
         }
-      }, schedulerInterval);
+      }, this.addJitter(schedulerInterval));
     }
 
     // Start stuck detection monitoring
@@ -505,13 +534,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             // Exponential backoff when no jobs are available to prevent tight polling
             // Start backoff after just 3 consecutive empty reserves (more aggressive than before)
             if (this.blockingStats.consecutiveEmptyReserves > 3) {
-              // More aggressive backoff: start at 50ms, grow faster, cap at 2000ms
+              // More aggressive backoff for high-concurrency: start at 100ms, grow faster, cap at 5000ms
               if (this.emptyReserveBackoffMs === 0) {
-                this.emptyReserveBackoffMs = 50; // Start at 50ms
+                this.emptyReserveBackoffMs = 100; // Start at 100ms for high concurrency
               } else {
                 this.emptyReserveBackoffMs = Math.min(
-                  2000, // Cap at 2 seconds
-                  Math.max(50, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
+                  5000, // Cap at 5 seconds for high concurrency
+                  Math.max(100, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
                 );
               }
 
@@ -663,6 +692,8 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     job: ReservedJob<T>,
     handlerResult: unknown,
     fetchNextCallback?: () => boolean,
+    processedOn?: number,
+    finishedOn?: number,
   ): Promise<ReservedJob<T> | undefined> {
     if (this.atomicCompletion && fetchNextCallback?.()) {
       // Try atomic completion with next job reservation
@@ -682,11 +713,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           `CompleteAndReserveNext failed, falling back to regular complete:`,
           err,
         );
-        // Fallback to regular completion
+        // Fallback to regular completion (without metadata - will be added by recordCompletion)
         await this.q.complete(job);
       }
     } else {
-      // Use regular completion (no atomic chaining)
+      // Use efficient combined completion if we have timing info
+      // Note: We'll still call recordCompletion separately for now to maintain compatibility
+      // TODO: In next major version, always use completeWithMetadata and remove recordCompletion call
       await this.q.complete(job);
     }
 
@@ -815,9 +848,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       );
       this.logger.info(
         `  📞 Total Blocking Calls: ${this.blockingStats.totalBlockingCalls}`,
-      );
-      this.logger.info(
-        `  ⏲️ Total Blocking Time: ${Math.round(this.blockingStats.totalBlockingTimeMs / 1000)}s`,
       );
       this.logger.info(
         `  📈 Queue Stats: Active=${queueStats.active}, Waiting=${queueStats.waiting}, Delayed=${queueStats.delayed}, Groups=${uniqueGroupsCount}`,
@@ -972,13 +1002,142 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return this.q.add(opts);
   }
 
+  /**
+   * Collect jobs from same group during grace period
+   *
+   * How it works:
+   * 1. Worker picks up first job and holds it in memory
+   * 2. Waits for the grace period for new jobs to arrive
+   * 3. When a new job arrives, reset the timer and hold ALL jobs for another full grace period
+   * 4. Repeat until no new jobs arrive for the full grace period
+   * 5. Process all collected jobs sorted by orderMs
+   *
+   * This ensures jobs arriving close together are batched and processed in correct order.
+   */
+  private async collectJobsWithGrace(
+    firstJob: ReservedJob<T>,
+  ): Promise<ReservedJob<T>[]> {
+    const graceMs = this.q.graceCollectionMs;
+
+    if (graceMs <= 0) {
+      return [firstJob];
+    }
+
+    const collected: ReservedJob<T>[] = [firstJob];
+    const initialCount = await this.q.getGroupJobCount(firstJob.groupId);
+    let lastSeenCount = initialCount;
+    let lastJobArrivalTime = Date.now(); // Reset every time a new job arrives
+    const startTime = Date.now();
+
+    this.logger.debug(
+      `Grace period collection started for group ${firstJob.groupId} (initial count: ${initialCount}, ${graceMs}ms window)`,
+    );
+
+    // Keep checking for NEW jobs until grace period expires with no new arrivals
+    while (Date.now() - lastJobArrivalTime < graceMs) {
+      await this.delay(10); // Check every 10ms
+
+      const currentCount = await this.q.getGroupJobCount(firstJob.groupId);
+
+      if (currentCount > lastSeenCount) {
+        // New jobs arrived! Reset the grace period timer
+        const newJobsCount = currentCount - lastSeenCount;
+        lastSeenCount = currentCount;
+        lastJobArrivalTime = Date.now(); // RESET: Hold all jobs for another full grace period
+        this.logger.debug(
+          `${newJobsCount} new job(s) detected in group ${firstJob.groupId}, resetting ${graceMs}ms grace period`,
+        );
+      }
+
+      // Safety: don't wait forever (max 3x the grace period from start)
+      if (Date.now() - startTime > graceMs * 3) {
+        this.logger.warn(
+          `Grace period exceeded 3x limit for group ${firstJob.groupId}, proceeding`,
+        );
+        break;
+      }
+    }
+
+    // Only collect jobs we detected DURING the grace period
+    // lastSeenCount is the count at the last detection, which happened within the grace window
+    const jobsArrivedDuringGrace = Math.max(0, lastSeenCount - initialCount);
+
+    // Only collect jobs that arrived DURING the grace period
+    // Don't collect ALL jobs - that would break the FIFO guarantee
+    for (let i = 0; i < jobsArrivedDuringGrace && i < 20; i++) {
+      try {
+        // Reserve next job from this group, passing first job's ID to bypass lock
+        const nextJob = await this.reserveNextFromSameGroup(
+          firstJob.groupId,
+          firstJob.id,
+        );
+        if (!nextJob) break;
+
+        collected.push(nextJob);
+      } catch (err) {
+        this.logger.warn(`Error collecting additional job: ${err}`);
+        break;
+      }
+    }
+
+    // Sort all collected jobs by orderMs
+    collected.sort((a, b) => a.orderMs - b.orderMs);
+
+    if (collected.length > 1) {
+      this.logger.info(
+        `Collected ${collected.length} jobs from group ${firstJob.groupId} during ${Date.now() - startTime}ms grace period`,
+      );
+    }
+
+    return collected;
+  }
+
+  /**
+   * Reserve next job from same group (helper for grace collection)
+   *
+   * Passes the initial job ID to bypass the lock check, allowing us to
+   * reserve multiple jobs from the same group during grace collection.
+   */
+  private async reserveNextFromSameGroup(
+    groupId: string,
+    allowedJobId: string,
+  ): Promise<ReservedJob<T> | null> {
+    // Pass the initial job ID - if the lock matches, we can reserve
+    return await this.q.reserveAtomic(groupId, allowedJobId);
+  }
+
   private async processOne(
+    job: ReservedJob<T>,
+    fetchNextCallback?: () => boolean,
+  ): Promise<void | ReservedJob<T>> {
+    // Collect jobs during grace period if enabled
+    const jobsToProcess = await this.collectJobsWithGrace(job);
+
+    // Process each job in order
+    let nextJob: ReservedJob<T> | undefined | void;
+    for (let i = 0; i < jobsToProcess.length; i++) {
+      const currentJob = jobsToProcess[i];
+      const isLastJob = i === jobsToProcess.length - 1;
+
+      nextJob = await this.processSingleJob(
+        currentJob,
+        isLastJob ? fetchNextCallback : undefined,
+      );
+    }
+
+    // Return the chained job from the last processed job (if any)
+    return nextJob;
+  }
+
+  private async processSingleJob(
     job: ReservedJob<T>,
     fetchNextCallback?: () => boolean,
   ): Promise<void | ReservedJob<T>> {
     const jobStartWallTime = Date.now();
 
     let hbTimer: NodeJS.Timeout | undefined;
+    let heartbeatDelayTimer: NodeJS.Timeout | undefined;
+
     const startHeartbeat = () => {
       // More conservative heartbeat: use 1/4 of job timeout instead of 1/2
       // This reduces Redis calls while still providing safety
@@ -997,10 +1156,28 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     };
 
     try {
+      // Smart heartbeat: only start for jobs that might actually timeout
+      // Skip heartbeat for short jobs (< jobTimeoutMs / 3) to reduce Redis load
+      const jobTimeout = this.q.jobTimeoutMs || 30000;
+      const heartbeatThreshold = jobTimeout / 3;
+
+      // Start heartbeat after threshold delay for potentially long-running jobs
+      heartbeatDelayTimer = setTimeout(() => {
+        startHeartbeat();
+      }, heartbeatThreshold);
+
       // Execute the user's handler
-      startHeartbeat();
       const handlerResult = await this.handler(job);
-      clearInterval(hbTimer!);
+
+      // Job finished quickly, cancel delayed heartbeat start
+      if (heartbeatDelayTimer) {
+        clearTimeout(heartbeatDelayTimer);
+      }
+
+      // Clean up heartbeat if it was started
+      if (hbTimer) {
+        clearInterval(hbTimer);
+      }
 
       // Complete the job and optionally get next job from same group
       const nextJob = await this.completeJob(
@@ -1032,7 +1209,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       // Return chained job if available and we have capacity
       return nextJob;
     } catch (err) {
-      clearInterval(hbTimer!);
+      // Clean up timers
+      if (heartbeatDelayTimer) {
+        clearTimeout(heartbeatDelayTimer);
+      }
+      if (hbTimer) {
+        clearInterval(hbTimer);
+      }
       await this.handleJobFailure(err, job, jobStartWallTime);
     }
   }
