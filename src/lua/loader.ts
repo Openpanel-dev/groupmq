@@ -10,6 +10,7 @@ export type ScriptName =
   | 'reserve-atomic'
   | 'complete'
   | 'complete-and-reserve-next'
+  | 'complete-with-metadata'
   | 'retry'
   | 'heartbeat'
   | 'cleanup'

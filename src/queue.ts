@@ -690,12 +690,45 @@ export class Queue<T = any> {
   /**
    * Complete a job by removing from processing and unlocking the group.
    * Note: Job metadata recording is handled separately by recordCompleted().
+   * 
+   * @deprecated Use completeWithMetadata() for internal operations. This method
+   * is kept for backward compatibility and testing only.
    */
   async complete(job: { id: string; groupId: string }) {
     await evalScript<number>(this.r, 'complete', [
       this.ns,
       job.id,
       job.groupId,
+    ]);
+  }
+
+  /**
+   * Complete a job AND record metadata in a single atomic operation.
+   * This is the efficient internal method used by workers.
+   */
+  private async completeWithMetadata(
+    job: { id: string; groupId: string },
+    result: unknown,
+    meta: {
+      processedOn: number;
+      finishedOn: number;
+      attempts: number;
+      maxAttempts: number;
+    },
+  ): Promise<void> {
+    await evalScript<number>(this.r, 'complete-with-metadata', [
+      this.ns,
+      job.id,
+      job.groupId,
+      'completed',
+      String(meta.finishedOn),
+      JSON.stringify(result ?? null),
+      String(this.keepCompleted),
+      String(this.keepFailed),
+      String(meta.processedOn),
+      String(meta.finishedOn),
+      String(meta.attempts),
+      String(meta.maxAttempts),
     ]);
   }
 

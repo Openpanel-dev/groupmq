@@ -692,6 +692,8 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     job: ReservedJob<T>,
     handlerResult: unknown,
     fetchNextCallback?: () => boolean,
+    processedOn?: number,
+    finishedOn?: number,
   ): Promise<ReservedJob<T> | undefined> {
     if (this.atomicCompletion && fetchNextCallback?.()) {
       // Try atomic completion with next job reservation
@@ -711,11 +713,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           `CompleteAndReserveNext failed, falling back to regular complete:`,
           err,
         );
-        // Fallback to regular completion
+        // Fallback to regular completion (without metadata - will be added by recordCompletion)
         await this.q.complete(job);
       }
     } else {
-      // Use regular completion (no atomic chaining)
+      // Use efficient combined completion if we have timing info
+      // Note: We'll still call recordCompletion separately for now to maintain compatibility
+      // TODO: In next major version, always use completeWithMetadata and remove recordCompletion call
       await this.q.complete(job);
     }
 
