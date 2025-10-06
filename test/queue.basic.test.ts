@@ -24,7 +24,13 @@ describe('basic per-group FIFO and parallelism', () => {
   });
 
   it('processes FIFO within group by orderMs and in parallel across groups', async () => {
-    const q = new Queue({ redis, namespace, jobTimeoutMs: 5000 });
+    const q = new Queue({
+      redis,
+      namespace,
+      jobTimeoutMs: 5000,
+      orderingMethod: 'in-memory',
+      orderingWindowMs: 200, // 200ms grace period for network jitter
+    });
 
     const seen: Array<string> = [];
     const worker = new Worker<{ n: number }>({
@@ -36,22 +42,29 @@ describe('basic per-group FIFO and parallelism', () => {
     });
     worker.run();
 
-    // add two groups interleaved; orderMs ensures deterministic order inside group
+    // Add jobs with timing that tests grace period:
+    // - gB jobs arrive close together (within 200ms grace)
+    // - They should be collected and ordered by orderMs
     await q.add({ groupId: 'gA', data: { n: 1 }, orderMs: 1000 });
-    await q.add({ groupId: 'gA', data: { n: 2 }, orderMs: 2000 });
-    await q.add({ groupId: 'gB', data: { n: 3 }, orderMs: 1500 });
-    await q.add({ groupId: 'gB', data: { n: 4 }, orderMs: 1600 });
+    await wait(50);
+    await q.add({ groupId: 'gB', data: { n: 3 }, orderMs: 1600 });
+    await wait(100); // Within 200ms grace - should be collected
+    await q.add({ groupId: 'gB', data: { n: 2 }, orderMs: 1500 });
+    await wait(50);
+    await q.add({ groupId: 'gA', data: { n: 4 }, orderMs: 2000 });
 
     await q.waitForEmpty();
 
-    // Check FIFO inside each group
+    // Check FIFO inside each group (should be ordered by orderMs due to buffering)
     const aIndices = seen.filter((s) => s.startsWith('gA:'));
     const bIndices = seen.filter((s) => s.startsWith('gB:'));
-    expect(aIndices).toEqual(['gA:1', 'gA:2']);
-    expect(bIndices).toEqual(['gB:3', 'gB:4']);
+    console.log(aIndices);
+    console.log(bIndices);
+    expect(aIndices).toEqual(['gA:1', 'gA:4']);
+    expect(bIndices).toEqual(['gB:2', 'gB:3']); // Correct order due to 200ms buffer
 
-    // Ensure we processed at least 3-4 items overall
-    expect(seen.length).toBeGreaterThanOrEqual(3);
+    // Ensure we processed all items
+    expect(seen.length).toBe(4);
 
     await worker.close();
   });

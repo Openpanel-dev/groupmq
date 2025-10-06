@@ -27,7 +27,7 @@ describe('Cron Jobs Tests', () => {
     queue = new Queue({
       redis,
       namespace,
-      orderingDelayMs: 0,
+      orderingMethod: 'none',
       jobTimeoutMs: 100,
       schedulerLockTtlMs: 50, // Fast lock for sub-second repeats in tests
     });

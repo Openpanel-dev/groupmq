@@ -5,7 +5,19 @@ description: Queue methods and examples.
 
 ## Queue
 
-GroupMQ exposes a BullMQ-like Queue API with group-aware FIFO semantics and optional ordering delay. Below are all public methods with a brief explanation and a practical example for each.
+GroupMQ exposes a BullMQ-like Queue API with group-aware FIFO semantics and configurable ordering strategies. Below are all public methods with a brief explanation and a practical example for each.
+
+## Configuration
+
+### Ordering Methods
+
+GroupMQ provides three strategies for handling out-of-order job arrivals:
+
+- **`'none'`** (default) - No ordering guarantees, fastest performance
+- **`'scheduler'`** - Redis buffering for large windows (1-5 seconds), requires scheduler
+- **`'in-memory'`** - Worker collection for small windows (50-500ms), no scheduler needed
+
+See the [Ordering Methods guide](/docs/ordering-methods) for detailed comparison and examples.
 
 ### Setup
 
@@ -19,7 +31,8 @@ const queue = new Queue<{ foo: string }>({
   namespace: 'demo',
   jobTimeoutMs: 30_000,
   maxAttempts: 3,
-  orderingDelayMs: 0,
+  orderingMethod: 'none', // or 'scheduler' or 'in-memory'
+  orderingWindowMs: 0, // required for 'scheduler' and 'in-memory' methods
   schedulerLockTtlMs: 1500, // (optional) default: 1500ms, controls min repeat interval
 })
 ```

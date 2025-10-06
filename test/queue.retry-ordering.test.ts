@@ -105,7 +105,8 @@ describe('retry keeps failed job as head and respects backoff', () => {
       redis: r2,
       namespace: ns,
       jobTimeoutMs: 1000,
-      orderingDelayMs: 100,
+      orderingMethod: 'in-memory',
+      orderingWindowMs: 100,
     });
 
     // Add events in the same problematic order from the user's logs
@@ -149,7 +150,8 @@ describe('retry keeps failed job as head and respects backoff', () => {
     worker.run();
 
     // Wait for all events to be processed
-    await wait(1000);
+    await q.waitForEmpty();
+    await wait(100); // Extra time to ensure all processing is complete
 
     // They should be processed in chronological order (by orderMs):
     // 095, 100, 102, 102, 103
@@ -170,7 +172,8 @@ describe('retry keeps failed job as head and respects backoff', () => {
       redis: r2,
       namespace: ns,
       jobTimeoutMs: 1000,
-      orderingDelayMs: 50, // Short delay to see the issue
+      orderingMethod: 'in-memory',
+      orderingWindowMs: 50, // Short delay to see the issue
     });
 
     // Add sequential events to same group

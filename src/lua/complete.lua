@@ -49,14 +49,26 @@ if val == jobId then
     -- Remove empty group zset and from groups tracking set
     redis.call("DEL", gZ)
     redis.call("SREM", ns .. ":groups", gid)
+    -- Clean up any buffering state (shouldn't exist but be safe)
+    redis.call("DEL", ns .. ":buffer:" .. gid)
+    redis.call("ZREM", ns .. ":buffering", gid)
   else
-    -- Re-add group to ready set if there are more jobs
-    local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-    if nextHead and #nextHead >= 2 then
-      local nextScore = tonumber(nextHead[2])
-      local readyKey = ns .. ":ready"
-      redis.call("ZADD", readyKey, nextScore, gid)
+    -- Group has more jobs, re-add to ready set
+    -- Note: If the group was buffering, it will be handled by the buffering logic
+    -- If it's not buffering, add to ready immediately
+    local groupBufferKey = ns .. ":buffer:" .. gid
+    local isBuffering = redis.call("EXISTS", groupBufferKey)
+    
+    if isBuffering == 0 then
+      -- Not buffering, add to ready immediately
+      local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+      if nextHead and #nextHead >= 2 then
+        local nextScore = tonumber(nextHead[2])
+        local readyKey = ns .. ":ready"
+        redis.call("ZADD", readyKey, nextScore, gid)
+      end
     end
+    -- If buffering, the scheduler will promote when ready
   end
   
   return 1

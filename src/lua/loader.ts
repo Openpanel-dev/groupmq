@@ -7,7 +7,6 @@ export type ScriptName =
   | 'enqueue'
   | 'reserve'
   | 'reserve-batch'
-  | 'reserve-from-group'
   | 'reserve-atomic'
   | 'complete'
   | 'complete-and-reserve-next'
@@ -25,11 +24,13 @@ export type ScriptName =
   | 'get-delayed-jobs'
   | 'get-unique-groups'
   | 'get-unique-groups-count'
+  | 'promote-buffered-groups'
   | 'recover-delayed-groups'
   | 'cleanup-poisoned-group'
   | 'remove'
   | 'clean-status'
-  | 'is-empty';
+  | 'is-empty'
+  | 'dead-letter';
 
 const cacheByClient = new WeakMap<Redis, Map<ScriptName, string>>();
 

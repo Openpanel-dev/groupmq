@@ -65,6 +65,7 @@ worker.run();
 - **1 in-flight job per group** via per-group locks
 - **Parallel processing** across different groups
 - **FIFO ordering** within each group by `orderMs` with stable tiebreaking
+- **Multiple ordering strategies** - `'none'`, `'scheduler'`, or `'in-memory'` for handling out-of-order arrivals
 - **At-least-once delivery** with configurable retries and backoff
 - **Efficient blocking operations** - no wasteful polling
 
@@ -90,9 +91,17 @@ type QueueOptions = {
   jobTimeoutMs?: number; // Job processing timeout (default: 30s)
   maxAttempts?: number; // Default max attempts (default: 3)
   reserveScanLimit?: number; // Ready groups scan limit (default: 20)
-  orderingDelayMs?: number; // Delay for late events (default: 0)
+  orderingMethod?: 'none' | 'scheduler' | 'in-memory'; // Ordering strategy (default: 'none')
+  orderingWindowMs?: number; // Time window for ordering (required for non-'none' methods)
 };
 ```
+
+**Ordering Methods:**
+- `'none'` - No ordering guarantees (fastest, zero overhead)
+- `'scheduler'` - Redis buffering for large windows (1-5 seconds, requires scheduler)
+- `'in-memory'` - Worker collection for small windows (50-500ms, no scheduler needed)
+
+See [Ordering Methods](https://openpanel-dev.github.io/groupmq/docs/ordering-methods) for detailed comparison.
 
 ### Worker Options
 

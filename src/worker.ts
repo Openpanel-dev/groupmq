@@ -176,7 +176,7 @@ export type WorkerOptions<T> = {
    * Interval in milliseconds between scheduler operations.
    * Scheduler promotes delayed jobs and processes cron/repeating jobs.
    *
-   * @default Adaptive: min(5000ms, max(1000ms, orderingDelayMs * 0.8)) with 1000ms minimum cap
+   * @default Adaptive: min(5000ms, max(1000ms, schedulerBufferMs * 0.8)) with 1000ms minimum cap
    * @example 1000 // For fast cron jobs (every minute or less)
    * @example 10000 // For slow cron jobs (hourly or daily)
    *
@@ -184,10 +184,10 @@ export type WorkerOptions<T> = {
    * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
    * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
    * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
-   * - High orderingDelayMs: Automatically adjusted to prevent ordering stalls
+   * - Scheduler buffering (`orderingMethod: 'scheduler'`): Automatically adjusted to prevent ordering stalls
    *
-   * **Important:** The scheduler interval is automatically capped at 80% of your orderingDelayMs
-   * (with a 1000ms minimum) to ensure delayed jobs are promoted promptly and don't cause
+   * **Important:** The scheduler interval is automatically capped at 80% of the scheduler buffer window
+   * (with a 1000ms minimum) to ensure buffered jobs are promoted promptly and don't cause
    * ordering stalls, while preventing excessive Redis load from very frequent scheduler runs.
    */
   schedulerIntervalMs?: number;
@@ -290,7 +290,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private totalJobsProcessed = 0;
   private blockingStats = {
     totalBlockingCalls: 0,
-    totalBlockingTimeMs: 0,
     consecutiveEmptyReserves: 0,
     lastActivityTime: Date.now(),
   };
@@ -324,15 +323,16 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for high-concurrency production
 
     // Ensure scheduler runs more frequently than ordering delay to prevent stalls
+    // But only if scheduler buffering is meaningful (>= 100ms)
     const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
     const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
-    const orderingDelayMs = this.q.orderingDelayMs || 0;
+    const schedulerBufferMs = this.q.schedulerBufferMs || 0;
     this.schedulerMs =
       opts.schedulerIntervalMs ??
-      (orderingDelayMs > 0
+      (schedulerBufferMs >= 100
         ? Math.min(
             defaultSchedulerMs,
-            Math.max(minSchedulerMs, orderingDelayMs * 0.8),
+            Math.max(minSchedulerMs, schedulerBufferMs * 0.8),
           )
         : defaultSchedulerMs);
 
@@ -846,9 +846,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         `  📞 Total Blocking Calls: ${this.blockingStats.totalBlockingCalls}`,
       );
       this.logger.info(
-        `  ⏲️ Total Blocking Time: ${Math.round(this.blockingStats.totalBlockingTimeMs / 1000)}s`,
-      );
-      this.logger.info(
         `  📈 Queue Stats: Active=${queueStats.active}, Waiting=${queueStats.waiting}, Delayed=${queueStats.delayed}, Groups=${uniqueGroupsCount}`,
       );
       this.logger.info(
@@ -1001,7 +998,134 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return this.q.add(opts);
   }
 
+  /**
+   * Collect jobs from same group during grace period
+   *
+   * How it works:
+   * 1. Worker picks up first job and holds it in memory
+   * 2. Waits for the grace period for new jobs to arrive
+   * 3. When a new job arrives, reset the timer and hold ALL jobs for another full grace period
+   * 4. Repeat until no new jobs arrive for the full grace period
+   * 5. Process all collected jobs sorted by orderMs
+   *
+   * This ensures jobs arriving close together are batched and processed in correct order.
+   */
+  private async collectJobsWithGrace(
+    firstJob: ReservedJob<T>,
+  ): Promise<ReservedJob<T>[]> {
+    const graceMs = this.q.graceCollectionMs;
+
+    if (graceMs <= 0) {
+      return [firstJob];
+    }
+
+    const collected: ReservedJob<T>[] = [firstJob];
+    const initialCount = await this.q.getGroupJobCount(firstJob.groupId);
+    let lastSeenCount = initialCount;
+    let lastJobArrivalTime = Date.now(); // Reset every time a new job arrives
+    const startTime = Date.now();
+
+    this.logger.debug(
+      `Grace period collection started for group ${firstJob.groupId} (initial count: ${initialCount}, ${graceMs}ms window)`,
+    );
+
+    // Keep checking for NEW jobs until grace period expires with no new arrivals
+    while (Date.now() - lastJobArrivalTime < graceMs) {
+      await this.delay(10); // Check every 10ms
+
+      const currentCount = await this.q.getGroupJobCount(firstJob.groupId);
+
+      if (currentCount > lastSeenCount) {
+        // New jobs arrived! Reset the grace period timer
+        const newJobsCount = currentCount - lastSeenCount;
+        lastSeenCount = currentCount;
+        lastJobArrivalTime = Date.now(); // RESET: Hold all jobs for another full grace period
+        this.logger.debug(
+          `${newJobsCount} new job(s) detected in group ${firstJob.groupId}, resetting ${graceMs}ms grace period`,
+        );
+      }
+
+      // Safety: don't wait forever (max 3x the grace period from start)
+      if (Date.now() - startTime > graceMs * 3) {
+        this.logger.warn(
+          `Grace period exceeded 3x limit for group ${firstJob.groupId}, proceeding`,
+        );
+        break;
+      }
+    }
+
+    // Only collect jobs we detected DURING the grace period
+    // lastSeenCount is the count at the last detection, which happened within the grace window
+    const jobsArrivedDuringGrace = Math.max(0, lastSeenCount - initialCount);
+
+    // Only collect jobs that arrived DURING the grace period
+    // Don't collect ALL jobs - that would break the FIFO guarantee
+    for (let i = 0; i < jobsArrivedDuringGrace && i < 20; i++) {
+      try {
+        // Reserve next job from this group, passing first job's ID to bypass lock
+        const nextJob = await this.reserveNextFromSameGroup(
+          firstJob.groupId,
+          firstJob.id,
+        );
+        if (!nextJob) break;
+
+        collected.push(nextJob);
+      } catch (err) {
+        this.logger.warn(`Error collecting additional job: ${err}`);
+        break;
+      }
+    }
+
+    // Sort all collected jobs by orderMs
+    collected.sort((a, b) => a.orderMs - b.orderMs);
+
+    if (collected.length > 1) {
+      this.logger.info(
+        `Collected ${collected.length} jobs from group ${firstJob.groupId} during ${Date.now() - startTime}ms grace period`,
+      );
+    }
+
+    return collected;
+  }
+
+  /**
+   * Reserve next job from same group (helper for grace collection)
+   *
+   * Passes the initial job ID to bypass the lock check, allowing us to
+   * reserve multiple jobs from the same group during grace collection.
+   */
+  private async reserveNextFromSameGroup(
+    groupId: string,
+    allowedJobId: string,
+  ): Promise<ReservedJob<T> | null> {
+    // Pass the initial job ID - if the lock matches, we can reserve
+    return await this.q.reserveAtomic(groupId, allowedJobId);
+  }
+
   private async processOne(
+    job: ReservedJob<T>,
+    fetchNextCallback?: () => boolean,
+  ): Promise<void | ReservedJob<T>> {
+    // Collect jobs during grace period if enabled
+    const jobsToProcess = await this.collectJobsWithGrace(job);
+
+    // Process each job in order
+    let nextJob: ReservedJob<T> | undefined | void;
+    for (let i = 0; i < jobsToProcess.length; i++) {
+      const currentJob = jobsToProcess[i];
+      const isLastJob = i === jobsToProcess.length - 1;
+
+      nextJob = await this.processSingleJob(
+        currentJob,
+        isLastJob ? fetchNextCallback : undefined,
+      );
+    }
+
+    // Return the chained job from the last processed job (if any)
+    return nextJob;
+  }
+
+  private async processSingleJob(
     job: ReservedJob<T>,
     fetchNextCallback?: () => boolean,
   ): Promise<void | ReservedJob<T>> {
