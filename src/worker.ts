@@ -1132,6 +1132,8 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     const jobStartWallTime = Date.now();
 
     let hbTimer: NodeJS.Timeout | undefined;
+    let heartbeatDelayTimer: NodeJS.Timeout | undefined;
+
     const startHeartbeat = () => {
       // More conservative heartbeat: use 1/4 of job timeout instead of 1/2
       // This reduces Redis calls while still providing safety
@@ -1150,10 +1152,28 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     };
 
     try {
+      // Smart heartbeat: only start for jobs that might actually timeout
+      // Skip heartbeat for short jobs (< jobTimeoutMs / 3) to reduce Redis load
+      const jobTimeout = this.q.jobTimeoutMs || 30000;
+      const heartbeatThreshold = jobTimeout / 3;
+
+      // Start heartbeat after threshold delay for potentially long-running jobs
+      heartbeatDelayTimer = setTimeout(() => {
+        startHeartbeat();
+      }, heartbeatThreshold);
+
       // Execute the user's handler
-      startHeartbeat();
       const handlerResult = await this.handler(job);
-      clearInterval(hbTimer!);
+
+      // Job finished quickly, cancel delayed heartbeat start
+      if (heartbeatDelayTimer) {
+        clearTimeout(heartbeatDelayTimer);
+      }
+
+      // Clean up heartbeat if it was started
+      if (hbTimer) {
+        clearInterval(hbTimer);
+      }
 
       // Complete the job and optionally get next job from same group
       const nextJob = await this.completeJob(
@@ -1185,7 +1205,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       // Return chained job if available and we have capacity
       return nextJob;
     } catch (err) {
-      clearInterval(hbTimer!);
+      // Clean up timers
+      if (heartbeatDelayTimer) {
+        clearTimeout(heartbeatDelayTimer);
+      }
+      if (hbTimer) {
+        clearInterval(hbTimer);
+      }
       await this.handleJobFailure(err, job, jobStartWallTime);
     }
   }

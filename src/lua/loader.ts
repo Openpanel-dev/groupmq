@@ -30,7 +30,8 @@ export type ScriptName =
   | 'remove'
   | 'clean-status'
   | 'is-empty'
-  | 'dead-letter';
+  | 'dead-letter'
+  | 'record-job-result';
 
 const cacheByClient = new WeakMap<Redis, Map<ScriptName, string>>();
 

@@ -687,18 +687,25 @@ export class Queue<T = any> {
     return await this.r.zcard(gZ);
   }
 
+  /**
+   * Complete a job by removing from processing and unlocking the group.
+   * Note: Job metadata recording is handled separately by recordCompleted().
+   */
   async complete(job: { id: string; groupId: string }) {
     await evalScript<number>(this.r, 'complete', [
       this.ns,
       job.id,
       job.groupId,
-      String(this.keepCompleted),
     ]);
   }
 
   /**
    * Atomically complete a job and try to reserve the next job from the same group
    * This prevents race conditions where other workers can steal subsequent jobs from the same group
+   */
+  /**
+   * Atomically complete a job and reserve the next job from the same group.
+   * Note: Job metadata recording is handled separately by recordCompleted().
    */
   async completeAndReserveNext(
     completedJobId: string,
@@ -717,7 +724,6 @@ export class Queue<T = any> {
           String(now),
           String(this.vt),
           String(this._schedulerBufferMs),
-          String(this.keepCompleted),
         ],
       );
 
@@ -778,15 +784,12 @@ export class Queue<T = any> {
    * Dead letter a job (remove from group and optionally store in dead letter queue)
    */
   async deadLetter(jobId: string, groupId: string) {
-    return evalScript<number>(this.r, 'dead-letter', [
-      this.ns,
-      jobId,
-      groupId,
-    ]);
+    return evalScript<number>(this.r, 'dead-letter', [this.ns, jobId, groupId]);
   }
 
   /**
    * Record a successful completion for retention and inspection
+   * Uses consolidated Lua script for atomic operation with retention management
    */
   async recordCompleted(
     job: { id: string; groupId: string },
@@ -799,75 +802,29 @@ export class Queue<T = any> {
       data?: unknown; // legacy
     },
   ): Promise<void> {
-    // Skip recording if keepCompleted is 0 (Lua script already handled deletion)
-    if (this.keepCompleted === 0) {
-      return;
-    }
-
-    const jobKey = `${this.ns}:job:${job.id}`;
-    const completedKey = `${this.ns}:completed`;
-
     const processedOn = meta.processedOn ?? Date.now();
     const finishedOn = meta.finishedOn ?? Date.now();
     const attempts = meta.attempts ?? 0;
     const maxAttempts = meta.maxAttempts ?? this.defaultMaxAttempts;
 
-    const pipe = this.r.multi();
-    pipe.hset(
-      jobKey,
-      'status',
-      'completed',
-      'processedOn',
-      String(processedOn),
-      'finishedOn',
-      String(finishedOn),
-      'attempts',
-      String(attempts),
-      'maxAttempts',
-      String(maxAttempts),
-      'returnvalue',
-      JSON.stringify(result ?? null),
-    );
-    pipe.zadd(completedKey, finishedOn, job.id);
-    // Ensure idempotence mapping exists for retained completed jobs
-    // This guarantees the number of unique keys matches kept completed jobs
-    pipe.set(`${this.ns}:unique:${job.id}`, job.id);
-
-    const replies = await pipe.exec();
-
-    // Check for pipeline errors
-    if (!replies || replies.length === 0) {
-      console.error(
-        `💥 CRITICAL: recordCompleted pipeline returned no results for job ${job.id}`,
-      );
-      throw new Error('Pipeline exec returned no results');
+    try {
+      await evalScript<number>(this.r, 'record-job-result', [
+        this.ns,
+        job.id,
+        'completed',
+        String(finishedOn),
+        JSON.stringify(result ?? null),
+        String(this.keepCompleted),
+        String(this.keepFailed),
+        String(processedOn),
+        String(finishedOn),
+        String(attempts),
+        String(maxAttempts),
+      ]);
+    } catch (error) {
+      this.logger.error(`Error recording completion for job ${job.id}:`, error);
+      throw error;
     }
-
-    for (let i = 0; i < replies.length; i++) {
-      const [error] = replies[i];
-      if (error) {
-        console.error(
-          `💥 CRITICAL: recordCompleted pipeline error at index ${i} for job ${job.id}:`,
-          error,
-        );
-        this.logger.error(
-          `recordCompleted pipeline error at index ${i} for job ${job.id}:`,
-          error,
-        );
-      }
-    }
-
-    // Verify ZADD succeeded (index 1 is the zadd command)
-    const zaddResult = replies[1]?.[1];
-    if (zaddResult !== 1 && zaddResult !== 0) {
-      console.error(
-        `💥 CRITICAL: ZADD to completed set may have failed for job ${job.id}, result:`,
-        zaddResult,
-      );
-    }
-
-    // Note: Retention trimming is now handled atomically in the Lua completion scripts
-    // to avoid race conditions between TS and Lua cleanup
   }
 
   /**
@@ -909,6 +866,7 @@ export class Queue<T = any> {
 
   /**
    * Record a final failure (dead-lettered) for retention and inspection
+   * Uses consolidated Lua script for atomic operation
    */
   async recordFinalFailure(
     job: { id: string; groupId: string },
@@ -921,9 +879,6 @@ export class Queue<T = any> {
       data?: unknown;
     },
   ): Promise<void> {
-    const jobKey = `${this.ns}:job:${job.id}`;
-    const failedKey = `${this.ns}:failed`;
-
     const processedOn = meta.processedOn ?? Date.now();
     const finishedOn = meta.finishedOn ?? Date.now();
     const attempts = meta.attempts ?? 0;
@@ -934,45 +889,30 @@ export class Queue<T = any> {
     const name = typeof error === 'string' ? 'Error' : (error.name ?? 'Error');
     const stack = typeof error === 'string' ? '' : (error.stack ?? '');
 
-    const pipe = this.r.multi();
-    pipe.hset(
-      jobKey,
-      'status',
-      'failed',
-      'failedReason',
-      message,
-      'failedName',
-      name,
-      'stacktrace',
-      stack,
-      'processedOn',
-      String(processedOn),
-      'finishedOn',
-      String(finishedOn),
-      'attempts',
-      String(attempts),
-      'maxAttempts',
-      String(maxAttempts),
-    );
-    pipe.zadd(failedKey, finishedOn, job.id);
+    // Package error info as JSON for Lua script
+    const errorInfo = JSON.stringify({ message, name, stack });
 
-    const replies = await pipe.exec();
-
-    // Check for pipeline errors
-    if (replies) {
-      for (let i = 0; i < replies.length; i++) {
-        const [error] = replies[i];
-        if (error) {
-          this.logger.error(
-            `recordFinalFailure pipeline error at index ${i} for job ${job.id}:`,
-            error,
-          );
-        }
-      }
+    try {
+      await evalScript<number>(this.r, 'record-job-result', [
+        this.ns,
+        job.id,
+        'failed',
+        String(finishedOn),
+        errorInfo,
+        String(this.keepCompleted),
+        String(this.keepFailed),
+        String(processedOn),
+        String(finishedOn),
+        String(attempts),
+        String(maxAttempts),
+      ]);
+    } catch (err) {
+      this.logger.error(
+        `Error recording final failure for job ${job.id}:`,
+        err,
+      );
+      throw err;
     }
-
-    // Note: Failed job retention trimming could be added here if needed,
-    // but for now we rely on the cleanup scripts to handle failed job cleanup
   }
 
   async getCompleted(limit = this.keepCompleted): Promise<
@@ -1177,9 +1117,36 @@ export class Queue<T = any> {
     ]);
   }
 
+  /**
+   * Clean up expired jobs and stale data.
+   * Uses distributed lock to ensure only one worker runs cleanup at a time,
+   * similar to scheduler lock pattern.
+   */
   async cleanup(): Promise<number> {
-    const now = Date.now();
-    return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)]);
+    // Try to acquire cleanup lock (similar to scheduler lock)
+    const cleanupLockKey = `${this.ns}:cleanup:lock`;
+    const ttlMs = 60000; // 60 seconds - longer than typical cleanup duration
+
+    try {
+      const acquired = await (this.r as any).set(
+        cleanupLockKey,
+        '1',
+        'PX',
+        ttlMs,
+        'NX',
+      );
+
+      if (acquired !== 'OK') {
+        // Another worker is running cleanup
+        return 0;
+      }
+
+      // We have the lock, run cleanup
+      const now = Date.now();
+      return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)]);
+    } catch (_e) {
+      return 0;
+    }
   }
 
   /**
@@ -1366,7 +1333,6 @@ export class Queue<T = any> {
     return this.reserveAtomic(groupId);
   }
 
-
   /**
    * Reserve a job from a specific group atomically (eliminates race conditions)
    * @param groupId - The group to reserve from
@@ -1534,22 +1500,29 @@ export class Queue<T = any> {
   /**
    * Fetch jobs by statuses, emulating BullMQ's Queue.getJobs API used by BullBoard.
    * Only getter functionality; ordering is best-effort.
+   *
+   * Optimized with pagination to reduce Redis load - especially important for BullBoard polling.
    */
   async getJobsByStatus(
     jobStatuses: Array<Status>,
     start = 0,
     end = -1,
   ): Promise<Array<JobEntity<T>>> {
+    // Calculate actual limit to fetch (with some buffer for deduplication)
+    const requestedCount = end >= 0 ? end - start + 1 : 100; // Default to 100 if unbounded
+    const fetchLimit = Math.min(requestedCount * 2, 500); // Cap at 500 to prevent excessive fetches
+
     // Map to track which status each job belongs to (for known status optimization)
     const idToStatus = new Map<string, Status>();
     const idSets: string[] = [];
 
-    // Helper to push a range from a sorted set
+    // Optimized helper that respects pagination
     const pushZRange = async (key: string, status: Status, reverse = false) => {
       try {
+        // Fetch only what we need (with buffer), not everything
         const ids = reverse
-          ? await this.r.zrevrange(key, 0, -1)
-          : await this.r.zrange(key, 0, -1);
+          ? await this.r.zrevrange(key, 0, fetchLimit - 1)
+          : await this.r.zrange(key, 0, fetchLimit - 1);
         for (const id of ids) {
           idToStatus.set(id, status);
         }
@@ -1574,12 +1547,26 @@ export class Queue<T = any> {
       await pushZRange(`${this.ns}:failed`, 'failed', true);
     }
     if (statuses.has('waiting')) {
-      // Aggregate waiting jobs by iterating known groups (no KEYS scan)
+      // Aggregate waiting jobs with limits to prevent scanning all groups
       try {
         const groupIds = await this.r.smembers(`${this.ns}:groups`);
         if (groupIds.length > 0) {
+          // Limit groups to scan (prevent excessive iteration)
+          const groupsToScan = groupIds.slice(
+            0,
+            Math.min(100, groupIds.length),
+          );
           const pipe = this.r.multi();
-          for (const gid of groupIds) pipe.zrange(`${this.ns}:g:${gid}`, 0, -1);
+
+          // Fetch only first few jobs from each group (most are at the head anyway)
+          const jobsPerGroup = Math.max(
+            1,
+            Math.ceil(fetchLimit / groupsToScan.length),
+          );
+          for (const gid of groupsToScan) {
+            pipe.zrange(`${this.ns}:g:${gid}`, 0, jobsPerGroup - 1);
+          }
+
           const rows = await pipe.exec();
           for (const r of rows || []) {
             const arr = (r?.[1] as string[]) || [];
@@ -1743,26 +1730,53 @@ export class Queue<T = any> {
     return false; // Timeout reached
   }
 
+  // Track cleanup calls per group to throttle excessive checking
+  private _groupCleanupTracking = new Map<string, number>();
+
   /**
    * Remove problematic groups from ready queue to prevent infinite loops
    * Handles both poisoned groups (only failed/expired jobs) and locked groups
+   *
+   * Throttled to 1% sampling rate to reduce Redis overhead
    */
   private async cleanupPoisonedGroup(groupId: string): Promise<string> {
+    // Throttle: only check 1% of the time to reduce Redis load
+    // This is called frequently when workers compete for groups
+    if (Math.random() > 0.01) {
+      return 'skipped';
+    }
+
+    // Additional throttle: max once per 10 seconds per group
+    const lastCheck = this._groupCleanupTracking.get(groupId) || 0;
+    const now = Date.now();
+    if (now - lastCheck < 10000) {
+      return 'throttled';
+    }
+    this._groupCleanupTracking.set(groupId, now);
+
+    // Periodically clean old tracking entries (keep map bounded)
+    if (this._groupCleanupTracking.size > 1000) {
+      const cutoff = now - 60000; // 1 minute ago
+      for (const [gid, ts] of this._groupCleanupTracking.entries()) {
+        if (ts < cutoff) {
+          this._groupCleanupTracking.delete(gid);
+        }
+      }
+    }
+
     try {
       const result = await evalScript<string>(
         this.r,
         'cleanup-poisoned-group',
-        [this.ns, groupId, String(Date.now())],
+        [this.ns, groupId, String(now)],
       );
       if (result === 'poisoned') {
         this.logger.warn(`Removed poisoned group ${groupId} from ready queue`);
       } else if (result === 'empty') {
         this.logger.warn(`Removed empty group ${groupId} from ready queue`);
       } else if (result === 'locked') {
-        // Only log locked group warnings occasionally to reduce spam in high-concurrency environments
-        // This is expected behavior when multiple workers compete for the same groups
-        if (Math.random() < 0.01) {
-          // Log only 1% of the time
+        // Only log locked group warnings occasionally
+        if (Math.random() < 0.1) {
           this.logger.debug(
             `Detected group ${groupId} is locked by another worker (this is normal with high concurrency)`,
           );
@@ -2148,7 +2162,6 @@ export class Queue<T = any> {
     }
   }
 
-
   /**
    * Remove a repeating job
    */
@@ -2207,7 +2220,6 @@ export class Queue<T = any> {
       return false;
     }
   }
-
 }
 
 function sleep(ms: number): Promise<void> {

@@ -754,5 +754,59 @@
       "jobType": "cpu",
       "multiProcess": true
     }
+  },
+  {
+    "timestamp": 1759769481695,
+    "queueType": "bullmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 57505,
+    "throughputJobsPerSec": 86.95,
+    "avgPickupMs": 27769.26,
+    "avgProcessingMs": 44.4,
+    "avgTotalMs": 27813.66,
+    "p95PickupMs": 53045,
+    "p95ProcessingMs": 44.72,
+    "p95TotalMs": 53089.31,
+    "peakCpuPercent": 8,
+    "peakMemoryMB": 215.5,
+    "avgCpuPercent": 0.2,
+    "avgMemoryMB": 210.3,
+    "settings": {
+      "mq": "bullmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
+  },
+  {
+    "timestamp": 1759769628240,
+    "queueType": "bullmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 58615,
+    "throughputJobsPerSec": 85.3,
+    "avgPickupMs": 28289.15,
+    "avgProcessingMs": 45.3,
+    "avgTotalMs": 28334.45,
+    "p95PickupMs": 53875,
+    "p95ProcessingMs": 47.55,
+    "p95TotalMs": 53922.55,
+    "peakCpuPercent": 7,
+    "peakMemoryMB": 219.1,
+    "avgCpuPercent": 0.2,
+    "avgMemoryMB": 214,
+    "settings": {
+      "mq": "bullmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
   }
 ]
