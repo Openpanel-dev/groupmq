@@ -1,3 +1,10 @@
+## [1.0.0-next.15](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.14...v1.0.0-next.15) (2025-10-06)
+
+
+### Features
+
+* better ordering options that actually works ([6f5e999](https://github.com/Openpanel-dev/groupmq/commit/6f5e9991079b302b076c64e288a7619e7da3ad25))
+
 ## [1.0.0-next.14](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.13...v1.0.0-next.14) (2025-10-05)
 
 
