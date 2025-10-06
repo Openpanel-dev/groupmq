@@ -32,6 +32,7 @@ if hadLock then
     -- Remove empty group
     redis.call("DEL", gZ)
     redis.call("SREM", ns .. ":groups", gid)
+    redis.call("ZREM", ns .. ":ready", gid)
     redis.call("DEL", ns .. ":buffer:" .. gid)
     redis.call("ZREM", ns .. ":buffering", gid)
   else

@@ -690,7 +690,7 @@ export class Queue<T = any> {
   /**
    * Complete a job by removing from processing and unlocking the group.
    * Note: Job metadata recording is handled separately by recordCompleted().
-   * 
+   *
    * @deprecated Use completeWithMetadata() for internal operations. This method
    * is kept for backward compatibility and testing only.
    */

@@ -27,6 +27,7 @@ if not zpop or #zpop == 0 then
   if jobCount == 0 then
     redis.call("DEL", gZ)
     redis.call("SREM", ns .. ":groups", gid)
+    redis.call("ZREM", ns .. ":ready", gid)
   end
   -- No next job; retention trimming already handled above
   return nil

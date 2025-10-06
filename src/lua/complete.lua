@@ -22,6 +22,8 @@ if val == jobId then
     -- Remove empty group zset and from groups tracking set
     redis.call("DEL", gZ)
     redis.call("SREM", ns .. ":groups", gid)
+    -- Remove from ready queue
+    redis.call("ZREM", ns .. ":ready", gid)
     -- Clean up any buffering state (shouldn't exist but be safe)
     redis.call("DEL", ns .. ":buffer:" .. gid)
     redis.call("ZREM", ns .. ":buffering", gid)
