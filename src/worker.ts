@@ -298,6 +298,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private redisCloseHandler?: () => void;
   private redisErrorHandler?: (error: Error) => void;
   private redisReadyHandler?: () => void;
+  private runLoopPromise?: Promise<void>;
 
   constructor(opts: WorkerOptions<T>) {
     super();
@@ -380,7 +381,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     }
   }
 
-  async run() {
+  async run(): Promise<void> {
+    // Store the run loop promise so close() can wait for it
+    const runPromise = this._runLoop();
+    this.runLoopPromise = runPromise;
+    return runPromise;
+  }
+
+  private async _runLoop(): Promise<void> {
     this.logger.info(`🚀 Worker ${this.name} starting...`);
     // Dedicated blocking client per worker with auto-pipelining to reduce contention
     try {
@@ -728,6 +736,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   /**
    * Record job completion for inspection
+   *
+   * During graceful shutdown, we continue recording completions for jobs that finish
+   * within the timeout window. Only after the graceful timeout expires (closed=true)
+   * do we skip recording to avoid connection errors.
    */
   private async recordCompletion(
     job: ReservedJob<T>,
@@ -735,6 +747,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     processedOn: number,
     finishedOn: number,
   ): Promise<void> {
+    // Only skip recording if worker is fully closed (after graceful timeout expired)
+    // During graceful shutdown (stopping=true, closed=false), we still record completions
+    if (this.closed) {
+      return;
+    }
+
     try {
       await this.q.recordCompleted(
         { id: job.id, groupId: job.groupId },
@@ -748,12 +766,18 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         },
       );
     } catch (e) {
-      // Always log this error, even if logger is disabled
-      console.error(
-        `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
-        e,
-      );
-      this.logger.warn('Failed to record completion', e);
+      // Suppress connection errors during shutdown - they're expected when Redis is closed
+      const isConnectionError =
+        e instanceof Error && e.message.includes('Connection is closed');
+
+      // Only log if it's not a connection error during shutdown
+      if (!isConnectionError || !this.stopping) {
+        console.error(
+          `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
+          e,
+        );
+        this.logger.warn('Failed to record completion', e);
+      }
     }
   }
 
@@ -908,15 +932,44 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       clearInterval(this.stuckDetectionTimer);
     }
 
-    // Note: asyncFifoQueue and jobsInProgress are local to run() method
-    // Worker loop will naturally drain when stopping = true
-    // Wait for jobs to finish
+    // Wait for jobs to finish first
     const startTime = Date.now();
     while (
       this.jobsInProgress.size > 0 &&
       Date.now() - startTime < gracefulTimeoutMs
     ) {
       await sleep(100);
+    }
+
+    // Close the blocking client immediately to interrupt any blocking operations
+    // This will cause the run loop to exit faster
+    if (this.blockingClient) {
+      try {
+        // Use disconnect() instead of quit() for immediate termination
+        this.blockingClient.disconnect();
+      } catch (_e) {
+        // ignore blocking client close errors
+      }
+      this.blockingClient = null;
+    }
+
+    // Now wait for the run loop to fully exit, but with a much shorter timeout
+    // Since we closed the blocking client, the run loop should exit immediately
+    if (this.runLoopPromise) {
+      const runLoopTimeout =
+        this.jobsInProgress.size > 0
+          ? gracefulTimeoutMs // If jobs are still running, use full timeout
+          : 2000; // Run loop should exit in 2 seconds after blocking client is closed
+
+      const timeoutPromise = new Promise<void>((resolve) => {
+        setTimeout(resolve, runLoopTimeout);
+      });
+
+      try {
+        await Promise.race([this.runLoopPromise, timeoutPromise]);
+      } catch (err) {
+        this.logger.warn('Error while waiting for run loop to exit:', err);
+      }
     }
 
     if (this.jobsInProgress.size > 0) {
@@ -941,6 +994,8 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.jobsInProgress.clear();
     this.ready = false;
     this.closed = true;
+
+    // Blocking client was already closed earlier to interrupt blocking operations
 
     // Remove Redis event listeners to avoid leaks
     try {
@@ -1017,9 +1072,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private async collectJobsWithGrace(
     firstJob: ReservedJob<T>,
   ): Promise<ReservedJob<T>[]> {
-    const graceMs = this.q.graceCollectionMs;
+    const initialGraceMs = this.q.graceCollectionMs;
 
-    if (graceMs <= 0) {
+    if (initialGraceMs <= 0) {
       return [firstJob];
     }
 
@@ -1028,31 +1083,39 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let lastSeenCount = initialCount;
     let lastJobArrivalTime = Date.now(); // Reset every time a new job arrives
     const startTime = Date.now();
+    let currentGraceMs = initialGraceMs; // Decaying grace window
+    const minGraceMs = 20; // Minimum wait time
+    const decayFactor = this.q.orderingGracePeriodDecay;
 
     this.logger.debug(
-      `Grace period collection started for group ${firstJob.groupId} (initial count: ${initialCount}, ${graceMs}ms window)`,
+      `Grace period collection started for group ${firstJob.groupId} (initial count: ${initialCount}, ${initialGraceMs}ms window, decay: ${decayFactor})`,
     );
 
     // Keep checking for NEW jobs until grace period expires with no new arrivals
-    while (Date.now() - lastJobArrivalTime < graceMs) {
+    while (Date.now() - lastJobArrivalTime < currentGraceMs) {
       await this.delay(10); // Check every 10ms
 
       const currentCount = await this.q.getGroupJobCount(firstJob.groupId);
 
       if (currentCount > lastSeenCount) {
-        // New jobs arrived! Reset the grace period timer
+        // New jobs arrived! Reset the grace period timer with decay
         const newJobsCount = currentCount - lastSeenCount;
         lastSeenCount = currentCount;
-        lastJobArrivalTime = Date.now(); // RESET: Hold all jobs for another full grace period
+        lastJobArrivalTime = Date.now(); // RESET timer
+
+        // Apply decay: reduce the grace window for the next iteration
+        currentGraceMs = Math.max(minGraceMs, currentGraceMs * decayFactor);
+
         this.logger.debug(
-          `${newJobsCount} new job(s) detected in group ${firstJob.groupId}, resetting ${graceMs}ms grace period`,
+          `${newJobsCount} new job(s) detected in group ${firstJob.groupId}, resetting grace period to ${Math.round(currentGraceMs)}ms (${Math.round((currentGraceMs / initialGraceMs) * 100)}% of original)`,
         );
       }
 
-      // Safety: don't wait forever (max 3x the grace period from start)
-      if (Date.now() - startTime > graceMs * 3) {
+      // Safety: don't wait forever (max multiplier from queue config)
+      const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
+      if (Date.now() - startTime > maxWaitMs) {
         this.logger.warn(
-          `Grace period exceeded 3x limit for group ${firstJob.groupId}, proceeding`,
+          `Grace period exceeded ${this.q.orderingMaxWaitMultiplier}x limit (${maxWaitMs}ms) for group ${firstJob.groupId}, proceeding`,
         );
         break;
       }

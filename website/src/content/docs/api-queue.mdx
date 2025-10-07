@@ -17,6 +17,11 @@ GroupMQ provides three strategies for handling out-of-order job arrivals:
 - **`'scheduler'`** - Redis buffering for large windows (1-5 seconds), requires scheduler
 - **`'in-memory'`** - Worker collection for small windows (50-500ms), no scheduler needed
 
+**Advanced Configuration** (for `'in-memory'` method):
+
+- **`orderingMaxWaitMultiplier`** (default: `3`) - Maximum wait time multiplier. Total wait never exceeds `orderingWindowMs × multiplier`.
+- **`orderingGracePeriodDecay`** (default: `1.0`) - Decay factor applied each time grace period resets. Values: `0.5` to `1.0`. Use `0.8-0.9` to process continuous streams faster.
+
 See the [Ordering Methods guide](/docs/ordering-methods) for detailed comparison and examples.
 
 ### Setup
@@ -33,6 +38,8 @@ const queue = new Queue<{ foo: string }>({
   maxAttempts: 3,
   orderingMethod: 'none', // or 'scheduler' or 'in-memory'
   orderingWindowMs: 0, // required for 'scheduler' and 'in-memory' methods
+  orderingMaxWaitMultiplier: 3, // (optional) default: 3, max wait = windowMs × multiplier
+  orderingGracePeriodDecay: 1.0, // (optional) default: 1.0, decay factor for 'in-memory'
   schedulerLockTtlMs: 1500, // (optional) default: 1500ms, controls min repeat interval
 })
 ```

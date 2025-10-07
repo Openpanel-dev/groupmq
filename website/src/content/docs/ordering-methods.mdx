@@ -327,7 +327,56 @@ Time: 600ms  → No new jobs for 200ms, process all 3 jobs in orderMs order
 
 This ensures that jobs arriving in rapid succession are collected together, even if they span longer than the window.
 
-**Safety limit**: To prevent infinite waiting, the grace period will never extend beyond 3x the original window from the first job.
+#### Advanced Configuration
+
+**Maximum Wait Multiplier** (`orderingMaxWaitMultiplier`):
+- **Default**: `3` (3x the ordering window)
+- **Purpose**: Prevents infinite waiting when jobs keep arriving
+- **Example**: With `orderingWindowMs: 100` and `orderingMaxWaitMultiplier: 5`, max total wait is 500ms
+
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'my-queue',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 100,
+  orderingMaxWaitMultiplier: 5, // Max 500ms total wait
+});
+```
+
+**Grace Period Decay** (`orderingGracePeriodDecay`):
+- **Default**: `1.0` (no decay, constant grace period)
+- **Range**: `0.5` to `1.0` (automatically clamped)
+- **Purpose**: Progressively reduce wait time when jobs keep arriving, making the system more responsive
+- **Common values**:
+  - `1.0` - No decay (default)
+  - `0.9` - Gentle 10% reduction per reset
+  - `0.8` - Moderate 20% reduction per reset
+  - `0.5` - Aggressive 50% reduction per reset
+
+**Example with decay**:
+```typescript
+const queue = new Queue({
+  redis,
+  namespace: 'analytics',
+  orderingMethod: 'in-memory',
+  orderingWindowMs: 100,
+  orderingGracePeriodDecay: 0.8, // 20% decay
+});
+
+// Timeline:
+// Job 1 at 0ms:   wait 100ms
+// Job 2 at 80ms:  wait 80ms (100 × 0.8)
+// Job 3 at 160ms: wait 64ms (80 × 0.8)
+// Job 4 at 224ms: wait 51ms (64 × 0.8)
+// Total: ~275ms vs ~320ms without decay
+```
+
+**When to use decay**:
+- **Continuous streams**: Jobs arriving in rapid succession (use `0.8-0.9`)
+- **Burst patterns**: Multiple related events (use `0.85-0.95`)
+- **Low latency**: Need faster processing while maintaining order (use `0.8-0.9`)
+- **Unpredictable timing**: Keep default `1.0` for consistent behavior
 
 ### Combining with Job Delays
 

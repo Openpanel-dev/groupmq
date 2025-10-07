@@ -246,6 +246,59 @@ export type QueueOptions = {
   orderingWindowMs?: number;
 
   /**
+   * Maximum wait time multiplier for the grace period when using `orderingMethod: 'in-memory'`.
+   *
+   * The grace period timer resets each time a new job arrives, but to prevent
+   * infinite waiting, it will never extend beyond `orderingWindowMs * orderingMaxWaitMultiplier`
+   * from when the first job was reserved.
+   *
+   * **Example:**
+   * - `orderingWindowMs: 100`, `orderingMaxWaitMultiplier: 3` → Max wait: 300ms total
+   * - `orderingWindowMs: 200`, `orderingMaxWaitMultiplier: 5` → Max wait: 1000ms total
+   *
+   * @default 3
+   * @example 2 // Stricter timeout (2x the ordering window)
+   * @example 5 // More lenient for high-latency scenarios
+   *
+   * **When to adjust:**
+   * - High network latency: Increase (4-10) to allow more time for delayed arrivals
+   * - Strict timing requirements: Decrease (2) for faster processing
+   * - Burst arrivals: Increase to handle continuous job streams
+   * - Low latency requirements: Decrease to minimize wait time
+   */
+  orderingMaxWaitMultiplier?: number;
+
+  /**
+   * Decay factor for the grace period when jobs keep arriving (used with `orderingMethod: 'in-memory'`).
+   *
+   * Each time a new job arrives and resets the grace period, the wait time is multiplied by this factor.
+   * This prevents excessive waiting when jobs arrive in continuous streams.
+   *
+   * **Example:**
+   * - `orderingWindowMs: 100`, `orderingGracePeriodDecay: 0.8`
+   *   - 1st wait: 100ms
+   *   - 2nd wait: 80ms (100 × 0.8)
+   *   - 3rd wait: 64ms (80 × 0.8)
+   *   - Continues until minimum (20ms) or max total wait reached
+   *
+   * **Special values:**
+   * - `1.0` (default): No decay, always wait full `orderingWindowMs`
+   * - `0.8`: Aggressive decay, 20% reduction each iteration
+   * - `0.9`: Moderate decay, 10% reduction each iteration
+   * - `0.95`: Gentle decay, 5% reduction each iteration
+   *
+   * @default 1.0 (no decay)
+   * @example 0.8 // Reduce wait by 20% each iteration
+   * @example 0.9 // Reduce wait by 10% each iteration
+   *
+   * **When to use:**
+   * - Continuous job streams: Use 0.8-0.9 to process faster
+   * - Burst arrivals: Use 0.9-0.95 to still collect most jobs
+   * - Unpredictable timing: Keep at 1.0 (no decay) for consistent behavior
+   */
+  orderingGracePeriodDecay?: number;
+
+  /**
    * Number of completed jobs to keep in Redis for inspection and debugging.
    * Older completed jobs are automatically removed to prevent memory growth.
    *
@@ -485,6 +538,8 @@ export class Queue<T = any> {
   // Internal properties derived from orderingMethod + orderingWindowMs
   private _schedulerBufferMs: number; // For 'scheduler' method
   private _graceCollectionMs: number; // For 'in-memory' method
+  private _orderingMaxWaitMultiplier: number; // Max grace period multiplier
+  private _orderingGracePeriodDecay: number; // Grace period decay factor
   private keepFailed: number;
   private schedulerLockTtlMs: number;
   public name: string;
@@ -500,6 +555,14 @@ export class Queue<T = any> {
 
   public get graceCollectionMs(): number {
     return this._graceCollectionMs;
+  }
+
+  public get orderingMaxWaitMultiplier(): number {
+    return this._orderingMaxWaitMultiplier;
+  }
+
+  public get orderingGracePeriodDecay(): number {
+    return this._orderingGracePeriodDecay;
   }
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
@@ -567,6 +630,23 @@ export class Queue<T = any> {
       // 'none' or invalid
       this._schedulerBufferMs = 0;
       this._graceCollectionMs = 0;
+    }
+
+    // Initialize ordering max wait multiplier (default: 3x)
+    this._orderingMaxWaitMultiplier = Math.max(
+      1,
+      opts.orderingMaxWaitMultiplier ?? 3,
+    );
+
+    // Initialize ordering grace period decay (default: 1.0 = no decay)
+    // Clamp between 0.5 and 1.0 to prevent extreme values
+    const decayValue = opts.orderingGracePeriodDecay ?? 1.0;
+    this._orderingGracePeriodDecay = Math.max(0.5, Math.min(1.0, decayValue));
+
+    if (decayValue < 0.5 || decayValue > 1.0) {
+      this.logger.warn(
+        `orderingGracePeriodDecay ${decayValue} is outside valid range [0.5, 1.0]. Clamping to ${this._orderingGracePeriodDecay}.`,
+      );
     }
 
     this.r.on('error', (err) => {

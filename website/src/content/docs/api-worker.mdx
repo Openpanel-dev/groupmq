@@ -110,6 +110,8 @@ await worker.close(30_000)
   - `'none'`: Processes jobs immediately in `orderMs` order
   - `'scheduler'`: Respects Redis buffering window (requires scheduler enabled)
   - `'in-memory'`: Collects jobs during grace period before processing batch
+    - Supports `orderingMaxWaitMultiplier` (max total wait time)
+    - Supports `orderingGracePeriodDecay` (progressive wait reduction)
 
-See the [Ordering Methods guide](/docs/ordering-methods) for configuration details.
+See the [Ordering Methods guide](/docs/ordering-methods) for detailed configuration options including advanced settings like grace period decay.
 
