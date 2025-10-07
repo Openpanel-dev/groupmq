@@ -1,3 +1,11 @@
+## [1.0.0-next.16](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.15...v1.0.0-next.16) (2025-10-07)
+
+
+### Bug Fixes
+
+* better shutdown and more ordering options ([5dff7ae](https://github.com/Openpanel-dev/groupmq/commit/5dff7ae6cf1841bf62d7a96cb2f2e5fea8084919))
+* ensure orderMs is a number (fallback to timestamp) ([42f5e9d](https://github.com/Openpanel-dev/groupmq/commit/42f5e9da765817f04b12042a3e73d7c66342ebdb))
+
 ## [1.0.0-next.15](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.14...v1.0.0-next.15) (2025-10-06)
 
 
