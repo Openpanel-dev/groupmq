@@ -251,6 +251,64 @@ describe('Ordering Grace Period (orderingGraceMs)', () => {
 
     await worker.close();
   });
+
+  it('should collect jobs added within 1-2ms (race condition test)', async () => {
+    const q = new Queue({
+      redis,
+      namespace: `${namespace}:race-condition`,
+      jobTimeoutMs: 5000,
+      orderingMethod: 'in-memory',
+      orderingWindowMs: 100, // Grace period to allow concurrent adds to complete
+      orderingGracePeriodDecay: 0.9,
+      orderingMaxWaitMultiplier: 8,
+      logger: true, // Disable verbose logging
+    });
+
+    const collectCalls: number[] = []; // Track how many jobs collected in each call
+    const processed: number[] = [];
+
+    const worker = new Worker<{ seq: number }>({
+      queue: q,
+      concurrency: 6,
+      logger: true,
+      handler: async (job) => {
+        processed.push(job.data.seq);
+        // Don't do atomic completion - process jobs slower to avoid
+        // the next job being grabbed before we can see the collection
+        await wait(50); // Longer than grace period to ensure we see batching
+      },
+    });
+    worker.run();
+
+    const baseTime = Date.now();
+
+    // Add all 4 jobs concurrently (within ~1ms)
+    // This simulates the real-world scenario where multiple API calls
+    // trigger job creation almost simultaneously
+    console.log(
+      'Adding jobs within 1ms window (simulating concurrent API calls)...',
+    );
+    await q.add({
+      groupId: 'device-1',
+      data: { seq: 3 },
+      orderMs: baseTime + 2,
+    });
+    await wait(50);
+    await Promise.all([
+      q.add({ groupId: 'device-1', data: { seq: 2 }, orderMs: baseTime + 1 }),
+      q.add({ groupId: 'device-1', data: { seq: 1 }, orderMs: baseTime }),
+      q.add({ groupId: 'device-1', data: { seq: 4 }, orderMs: baseTime + 3 }),
+    ]);
+    console.log('All 4 jobs added');
+
+    await q.waitForEmpty();
+    await wait(100);
+
+    // All jobs should be processed in order
+    expect(processed).toEqual([1, 2, 3, 4]);
+
+    await worker.close();
+  });
 });
 
 async function wait(ms: number) {

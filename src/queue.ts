@@ -299,6 +299,25 @@ export type QueueOptions = {
   orderingGracePeriodDecay?: number;
 
   /**
+   * Maximum number of jobs to collect in a single batch when using `orderingMethod: 'in-memory'`.
+   *
+   * When the grace period expires, the worker collects all remaining jobs in the group up to this limit.
+   * This prevents memory issues and processing delays when many jobs have accumulated.
+   *
+   * @default 10
+   * @example 5 // Smaller batches for faster processing
+   * @example 20 // Larger batches for better throughput
+   * @example 50 // Very large batches for high-volume scenarios
+   *
+   * **When to adjust:**
+   * - High job volume: Increase (20-50) to process more jobs per batch
+   * - Memory constraints: Decrease (5-10) to reduce memory usage
+   * - Processing time: Smaller batches = more responsive, larger batches = better throughput
+   * - Large payloads: Decrease if individual jobs have large data payloads
+   */
+  orderingMaxBatchSize?: number;
+
+  /**
    * Number of completed jobs to keep in Redis for inspection and debugging.
    * Older completed jobs are automatically removed to prevent memory growth.
    *
@@ -540,6 +559,7 @@ export class Queue<T = any> {
   private _graceCollectionMs: number; // For 'in-memory' method
   private _orderingMaxWaitMultiplier: number; // Max grace period multiplier
   private _orderingGracePeriodDecay: number; // Grace period decay factor
+  private _orderingMaxBatchSize: number; // Max jobs to collect in a batch
   private keepFailed: number;
   private schedulerLockTtlMs: number;
   public name: string;
@@ -563,6 +583,10 @@ export class Queue<T = any> {
 
   public get orderingGracePeriodDecay(): number {
     return this._orderingGracePeriodDecay;
+  }
+
+  public get orderingMaxBatchSize(): number {
+    return this._orderingMaxBatchSize;
   }
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
@@ -648,6 +672,13 @@ export class Queue<T = any> {
         `orderingGracePeriodDecay ${decayValue} is outside valid range [0.5, 1.0]. Clamping to ${this._orderingGracePeriodDecay}.`,
       );
     }
+
+    // Initialize max batch size (default: 10)
+    // Clamp between 1 and 100 to prevent extreme values
+    this._orderingMaxBatchSize = Math.max(
+      1,
+      Math.min(100, opts.orderingMaxBatchSize ?? 10),
+    );
 
     this.r.on('error', (err) => {
       this.logger.error('Redis error (main):', err);

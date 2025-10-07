@@ -300,6 +300,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private redisReadyHandler?: () => void;
   private runLoopPromise?: Promise<void>;
 
+  // Track when we started collecting for each group (for in-memory ordering)
+  // This ensures we wait the full grace period from when we FIRST picked up a job from the group
+  private groupCollectionStartTimes = new Map<string, number>();
+
   constructor(opts: WorkerOptions<T>) {
     super();
 
@@ -344,6 +348,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+  }
+
+  get isClosed() {
+    return this.closed;
   }
 
   /**
@@ -918,6 +926,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
    * @param gracefulTimeoutMs Maximum time to wait for current job to finish (default: 30 seconds)
    */
   async close(gracefulTimeoutMs = 30_000): Promise<void> {
+    // Give some time if we just received a job
+    // Otherwise jobsInProgress will be 0 and we will exit immediately
+    await this.delay(100);
+
     this.stopping = true;
 
     if (this.cleanupTimer) {
@@ -1062,12 +1074,18 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
    *
    * How it works:
    * 1. Worker picks up first job and holds it in memory
-   * 2. Waits for the grace period for new jobs to arrive
-   * 3. When a new job arrives, reset the timer and hold ALL jobs for another full grace period
+   * 2. Waits for the grace period to allow concurrent enqueue operations to finish
+   * 3. When new jobs are detected, reset the timer (with decay) and wait again
    * 4. Repeat until no new jobs arrive for the full grace period
    * 5. Process all collected jobs sorted by orderMs
    *
-   * This ensures jobs arriving close together are batched and processed in correct order.
+   * This solves the race condition where jobs are enqueued within 1-2ms:
+   * - Worker reserves job 1 while jobs 2-4 are still being written to Redis
+   * - By always waiting the grace period, we give concurrent writes time to complete
+   * - Then we collect all jobs that finished enqueueing during our wait
+   *
+   * NOTE: The grace window is measured from when WE picked up the job (Date.now()),
+   * NOT from when the job was enqueued. This is critical for handling concurrent enqueues.
    */
   private async collectJobsWithGrace(
     firstJob: ReservedJob<T>,
@@ -1078,60 +1096,94 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       return [firstJob];
     }
 
+    const groupId = firstJob.groupId;
     const collected: ReservedJob<T>[] = [firstJob];
-    const initialCount = await this.q.getGroupJobCount(firstJob.groupId);
-    let lastSeenCount = initialCount;
-    let lastJobArrivalTime = Date.now(); // Reset every time a new job arrives
-    const startTime = Date.now();
+    const now = Date.now();
+
+    // Check if we're already in a collection window for this group
+    let collectionStartTime = this.groupCollectionStartTimes.get(groupId);
+
+    if (!collectionStartTime) {
+      // First job from this group - start tracking the collection window
+      collectionStartTime = now;
+      this.groupCollectionStartTimes.set(groupId, collectionStartTime);
+
+      this.logger.debug(
+        `Started collection window for group ${groupId} (${initialGraceMs}ms grace period)`,
+      );
+    } else {
+      // We're continuing an existing collection for this group
+      // Check if we've already waited long enough
+      const elapsedSinceStart = now - collectionStartTime;
+      if (elapsedSinceStart >= initialGraceMs) {
+        this.logger.debug(
+          `Collection window for group ${groupId} already expired (${elapsedSinceStart}ms elapsed), processing immediately`,
+        );
+        return [firstJob];
+      }
+
+      this.logger.debug(
+        `Continuing collection for group ${groupId} (${elapsedSinceStart}ms elapsed)`,
+      );
+    }
+
+    let lastSeenCount = 0;
+    let lastJobArrivalTime = now; // Reset every time we detect new jobs
     let currentGraceMs = initialGraceMs; // Decaying grace window
     const minGraceMs = 20; // Minimum wait time
     const decayFactor = this.q.orderingGracePeriodDecay;
 
-    this.logger.debug(
-      `Grace period collection started for group ${firstJob.groupId} (initial count: ${initialCount}, ${initialGraceMs}ms window, decay: ${decayFactor})`,
-    );
+    // ALWAYS wait the grace period when we first pick up a job
+    // This gives concurrent enqueue operations time to finish writing to Redis
+    // The goal is to collect ALL jobs that exist at the END of the grace period
 
     // Keep checking for NEW jobs until grace period expires with no new arrivals
     while (Date.now() - lastJobArrivalTime < currentGraceMs) {
       await this.delay(10); // Check every 10ms
 
-      const currentCount = await this.q.getGroupJobCount(firstJob.groupId);
+      const currentCount = await this.q.getGroupJobCount(groupId);
 
       if (currentCount > lastSeenCount) {
         // New jobs arrived! Reset the grace period timer with decay
         const newJobsCount = currentCount - lastSeenCount;
         lastSeenCount = currentCount;
-        lastJobArrivalTime = Date.now(); // RESET timer
+        lastJobArrivalTime = Date.now(); // RESET timer to when we detected new jobs
 
         // Apply decay: reduce the grace window for the next iteration
         currentGraceMs = Math.max(minGraceMs, currentGraceMs * decayFactor);
 
         this.logger.debug(
-          `${newJobsCount} new job(s) detected in group ${firstJob.groupId}, resetting grace period to ${Math.round(currentGraceMs)}ms (${Math.round((currentGraceMs / initialGraceMs) * 100)}% of original)`,
+          `${newJobsCount} new job(s) detected in group ${groupId}, resetting grace period to ${Math.round(currentGraceMs)}ms (${Math.round((currentGraceMs / initialGraceMs) * 100)}% of original)`,
         );
       }
 
       // Safety: don't wait forever (max multiplier from queue config)
       const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
-      if (Date.now() - startTime > maxWaitMs) {
+      const totalWaitTime = Date.now() - collectionStartTime;
+      if (totalWaitTime > maxWaitMs) {
         this.logger.warn(
-          `Grace period exceeded ${this.q.orderingMaxWaitMultiplier}x limit (${maxWaitMs}ms) for group ${firstJob.groupId}, proceeding`,
+          `Grace period exceeded ${this.q.orderingMaxWaitMultiplier}x limit (${maxWaitMs}ms) for group ${groupId} (waited ${totalWaitTime}ms), proceeding`,
         );
         break;
       }
     }
 
-    // Only collect jobs we detected DURING the grace period
-    // lastSeenCount is the count at the last detection, which happened within the grace window
-    const jobsArrivedDuringGrace = Math.max(0, lastSeenCount - initialCount);
+    // Collect ALL remaining jobs in the group (up to configured batch limit)
+    // These are the jobs that were there when the grace period ended
+    const finalCount = await this.q.getGroupJobCount(groupId);
+    const maxBatchSize = this.q.orderingMaxBatchSize;
+    const jobsToCollect = Math.min(finalCount, maxBatchSize);
 
-    // Only collect jobs that arrived DURING the grace period
-    // Don't collect ALL jobs - that would break the FIFO guarantee
-    for (let i = 0; i < jobsArrivedDuringGrace && i < 20; i++) {
+    this.logger.debug(
+      `Grace period complete for group ${groupId}, collecting ${jobsToCollect} of ${finalCount} remaining jobs (max batch: ${maxBatchSize})`,
+    );
+
+    // Collect remaining jobs from the group (up to max batch size)
+    for (let i = 0; i < jobsToCollect; i++) {
       try {
         // Reserve next job from this group, passing first job's ID to bypass lock
         const nextJob = await this.reserveNextFromSameGroup(
-          firstJob.groupId,
+          groupId,
           firstJob.id,
         );
         if (!nextJob) break;
@@ -1155,7 +1207,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     if (collected.length > 1) {
       this.logger.info(
-        `Collected ${collected.length} jobs from group ${firstJob.groupId} during ${Date.now() - startTime}ms grace period`,
+        `Collected ${collected.length} jobs from group ${groupId} during ${Date.now() - now}ms grace period`,
         {
           unsorted: oldCollected.map((job) => job.id),
           sorted: collected.map((job, index) => ({
@@ -1168,6 +1220,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         },
       );
     }
+
+    // Clear the tracking for this group after we've collected the batch
+    // This allows the next batch to start fresh
+    this.groupCollectionStartTimes.delete(groupId);
 
     return collected;
   }

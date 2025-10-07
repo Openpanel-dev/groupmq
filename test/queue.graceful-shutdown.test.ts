@@ -254,7 +254,7 @@ describe('Graceful Shutdown Tests', () => {
     const elapsed = Date.now() - startTime;
 
     expect(elapsed).toBeGreaterThan(190);
-    expect(elapsed).toBeLessThan(500); // Increased tolerance for proper run loop shutdown
+    expect(elapsed).toBeLessThan(600);
     expect(sawGracefulTimeout).toBe(true);
 
     shouldStop = true; // Allow the handler to finish
@@ -481,4 +481,34 @@ describe('Graceful Shutdown Tests', () => {
 
     await redis.quit();
   }, 10000); // 10 second timeout for the test
+
+  it('should shutdown gracefully when we have orderingWindowMs + orderingMethod = "in-memory"', async () => {
+    const redis = new Redis(REDIS_URL);
+    const queue = new Queue({
+      redis,
+      logger: true,
+      namespace: `${namespace}:in-memory`,
+      orderingMethod: 'in-memory',
+      orderingWindowMs: 1000,
+    });
+    let isCompleted = false;
+    const worker = new Worker({
+      queue: queue,
+      logger: true,
+      handler: async (job) => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        isCompleted = true;
+      },
+    });
+    await queue.add({ groupId: 'test-group', data: { id: 1 } });
+    worker.on('completed', (job) => {
+      console.log('Completed', job.id);
+    });
+    worker.run();
+    await worker.close(2000);
+    expect(isCompleted).toBe(true);
+    expect(worker.isProcessing()).toBe(false);
+    expect(worker.getCurrentJob()).toBe(null);
+    expect(worker.isClosed).toBe(true);
+  });
 });

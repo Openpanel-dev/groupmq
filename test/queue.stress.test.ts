@@ -217,7 +217,7 @@ describe('Stress and Performance Degradation Tests', () => {
     // In production, worker churn would be much less aggressive.
     expect(duplicateRate).toBeLessThan(0.1); // Less than 10% duplicates
 
-    await redis.quit();
+    // await redis.quit();
   }, 30000);
 
   it('should handle burst traffic patterns', async () => {
