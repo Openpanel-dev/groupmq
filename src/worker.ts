@@ -1080,12 +1080,29 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       }
     }
 
+    const oldCollected = collected.slice();
+
     // Sort all collected jobs by orderMs
-    collected.sort((a, b) => a.orderMs - b.orderMs);
+    // Handle NaN values by treating them as 0 (or using timestamp as fallback)
+    collected.sort((a, b) => {
+      const aOrder = Number.isNaN(a.orderMs) ? a.timestamp : a.orderMs;
+      const bOrder = Number.isNaN(b.orderMs) ? b.timestamp : b.orderMs;
+      return aOrder - bOrder;
+    });
 
     if (collected.length > 1) {
       this.logger.info(
         `Collected ${collected.length} jobs from group ${firstJob.groupId} during ${Date.now() - startTime}ms grace period`,
+        {
+          unsorted: oldCollected.map((job) => job.id),
+          sorted: collected.map((job, index) => ({
+            jobId: job.id,
+            order: index,
+            groupId: job.groupId,
+            orderMs: job.orderMs,
+            timestamp: job.timestamp,
+          })),
+        },
       );
     }
 

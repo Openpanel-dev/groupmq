@@ -661,6 +661,7 @@ export class Queue<T = any> {
       data = null as T;
     }
 
+    const parsedOrderMs = Number.parseInt(parts[7], 10);
     const job = {
       id: parts[0],
       groupId: parts[1],
@@ -669,7 +670,9 @@ export class Queue<T = any> {
       maxAttempts: Number.parseInt(parts[4], 10),
       seq: Number.parseInt(parts[5], 10),
       timestamp: Number.parseInt(parts[6], 10),
-      orderMs: Number.parseInt(parts[7], 10),
+      orderMs: Number.isNaN(parsedOrderMs)
+        ? Number.parseInt(parts[6], 10)
+        : parsedOrderMs, // Fallback to timestamp if orderMs is NaN
       score: Number(parts[8]),
       deadlineAt: Number.parseInt(parts[9], 10),
     } as ReservedJob<T>;
@@ -1414,6 +1417,8 @@ export class Queue<T = any> {
       deadline,
     ] = parts;
 
+    const parsedTimestamp = parseInt(timestamp, 10);
+    const parsedOrderMs = parseInt(orderMs, 10);
     return {
       id,
       groupId: groupIdRaw,
@@ -1421,8 +1426,8 @@ export class Queue<T = any> {
       attempts: parseInt(attempts, 10),
       maxAttempts: parseInt(maxAttempts, 10),
       seq: parseInt(seq, 10),
-      timestamp: parseInt(timestamp, 10),
-      orderMs: parseInt(orderMs, 10),
+      timestamp: parsedTimestamp,
+      orderMs: Number.isNaN(parsedOrderMs) ? parsedTimestamp : parsedOrderMs, // Fallback to timestamp if orderMs is NaN
       score: parseFloat(score),
       deadlineAt: parseInt(deadline, 10),
     };
