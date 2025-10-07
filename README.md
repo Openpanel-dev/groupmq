@@ -32,6 +32,7 @@ const queue = new Queue({
   redis,
   namespace: "orders", // Will be prefixed with 'groupmq:'
   jobTimeoutMs: 30_000, // How long before job times out
+  logger: true, // Enable logging (optional)
 });
 
 await queue.add({
@@ -43,6 +44,7 @@ await queue.add({
 
 const worker = new Worker({
   queue,
+  concurrency: 1, // Process 1 job at a time (can increase for parallel processing)
   handler: async (job) => {
     console.log(`Processing:`, job.data);
   },
@@ -59,15 +61,18 @@ worker.run();
 - **Clear naming** - `jobTimeoutMs` instead of confusing `visibilityTimeoutMs`
 - **Automatic namespace prefixing**, all namespaces get `groupmq:` prefix to avoid conflicts
 - **Unified configuration**, no duplicate options between Queue and Worker
+- **Built-in logging**, optional logger for debugging and monitoring (both Queue and Worker)
 
 ### Performance & Reliability
 
+- **High throughput** - 70+ jobs/sec with 4 workers, 80+ jobs/sec at scale
 - **1 in-flight job per group** via per-group locks
-- **Parallel processing** across different groups
+- **Parallel processing** across different groups with configurable concurrency
 - **FIFO ordering** within each group by `orderMs` with stable tiebreaking
 - **Multiple ordering strategies** - `'none'`, `'scheduler'`, or `'in-memory'` for handling out-of-order arrivals
-- **At-least-once delivery** with configurable retries and backoff
+- **At-least-once delivery** with configurable retries and exponential backoff
 - **Efficient blocking operations** - no wasteful polling
+- **Atomic operations** - all critical paths use Lua scripts for consistency
 
 ## Inspiration from BullMQ
 
@@ -86,20 +91,26 @@ We're grateful to the BullMQ team for their excellent work and the foundation th
 
 ```ts
 type QueueOptions = {
-  redis: Redis;
-  namespace: string; // Required, gets 'groupmq:' prefix
-  jobTimeoutMs?: number; // Job processing timeout (default: 30s)
-  maxAttempts?: number; // Default max attempts (default: 3)
-  reserveScanLimit?: number; // Ready groups scan limit (default: 20)
-  orderingMethod?: 'none' | 'scheduler' | 'in-memory'; // Ordering strategy (default: 'none')
-  orderingWindowMs?: number; // Time window for ordering (required for non-'none' methods)
+  redis: Redis;                    // Redis client instance (required)
+  namespace: string;                // Unique queue name, gets 'groupmq:' prefix (required)
+  logger?: boolean | LoggerInterface; // Enable logging (default: false)
+  jobTimeoutMs?: number;            // Job processing timeout (default: 30000ms)
+  maxAttempts?: number;             // Default max retry attempts (default: 3)
+  reserveScanLimit?: number;        // Groups to scan when reserving (default: 20)
+  keepCompleted?: number;           // Number of completed jobs to retain (default: 100)
+  keepFailed?: number;              // Number of failed jobs to retain (default: 100)
+  schedulerLockTtlMs?: number;      // Scheduler lock TTL (default: 1500ms)
+  orderingMethod?: OrderingMethod;  // Ordering strategy (default: 'none')
+  orderingWindowMs?: number;        // Time window for ordering (required for non-'none' methods)
 };
+
+type OrderingMethod = 'none' | 'scheduler' | 'in-memory';
 ```
 
 **Ordering Methods:**
-- `'none'` - No ordering guarantees (fastest, zero overhead)
-- `'scheduler'` - Redis buffering for large windows (1-5 seconds, requires scheduler)
-- `'in-memory'` - Worker collection for small windows (50-500ms, no scheduler needed)
+- `'none'` - No ordering guarantees (fastest, zero overhead, no extra latency)
+- `'scheduler'` - Redis buffering for large windows (≥1000ms, requires scheduler, adds latency)
+- `'in-memory'` - Worker collection for small windows (50-500ms, no scheduler, adds latency per batch)
 
 See [Ordering Methods](https://openpanel-dev.github.io/groupmq/docs/ordering-methods) for detailed comparison.
 
@@ -107,18 +118,133 @@ See [Ordering Methods](https://openpanel-dev.github.io/groupmq/docs/ordering-met
 
 ```ts
 type WorkerOptions<T> = {
-  queue: Queue; // Existing queue instance (shared config)
-  name?: string; // Worker name for logging
-  handler: (job: ReservedJob<T>) => Promise<void>;
-  heartbeatMs?: number; // Heartbeat interval (default: jobTimeoutMs/3)
-  onError?: (err: unknown, job?: ReservedJob<T>) => void;
-  maxAttempts?: number; // Max retry attempts (default: 3)
-  backoff?: BackoffStrategy; // Retry backoff function
-  enableCleanup?: boolean; // Periodic cleanup (default: true)
-  cleanupIntervalMs?: number; // Cleanup frequency (default: 60s)
-  blockingTimeoutSec?: number; // Blocking timeout (default: 5s)
+  queue: Queue<T>;                           // Queue instance to process jobs from (required)
+  handler: (job: ReservedJob<T>) => Promise<unknown>; // Job processing function (required)
+  name?: string;                             // Worker name for logging (default: queue.name)
+  logger?: boolean | LoggerInterface;        // Enable logging (default: false)
+  concurrency?: number;                      // Number of jobs to process in parallel (default: 1)
+  heartbeatMs?: number;                      // Heartbeat interval (default: jobTimeoutMs/3)
+  onError?: (err: unknown, job?: ReservedJob<T>) => void; // Error handler
+  maxAttempts?: number;                      // Max retry attempts (default: queue.maxAttempts)
+  backoff?: BackoffStrategy;                 // Retry backoff function
+  enableCleanup?: boolean;                   // Periodic cleanup (default: true)
+  cleanupIntervalMs?: number;                // Cleanup frequency (default: 60000ms)
+  schedulerIntervalMs?: number;              // Scheduler frequency (default: adaptive)
+  blockingTimeoutSec?: number;               // Blocking reserve timeout (default: 5s)
+  atomicCompletion?: boolean;                // Atomic completion + next reserve (default: true)
 };
+
+type BackoffStrategy = (attempt: number) => number; // returns delay in ms
 ```
+
+### Job Options
+
+When adding a job to the queue:
+
+```ts
+await queue.add({
+  groupId: string;           // Required: Group ID for FIFO processing
+  data: T;                   // Required: Job payload data
+  orderMs?: number;          // Timestamp for ordering (default: Date.now())
+  maxAttempts?: number;      // Max retry attempts (default: queue.maxAttempts)
+  jobId?: string;            // Custom job ID (default: auto-generated UUID)
+  delay?: number;            // Delay in ms before job becomes available
+  runAt?: Date | number;     // Specific time to run the job
+  repeat?: RepeatOptions;    // Repeating job configuration (cron or interval)
+});
+
+type RepeatOptions = 
+  | { every: number }                    // Repeat every N milliseconds
+  | { pattern: string };                 // Cron pattern (standard 5-field format)
+```
+
+**Example with delay:**
+```ts
+await queue.add({
+  groupId: 'user:123',
+  data: { action: 'send-reminder' },
+  delay: 3600000, // Run in 1 hour
+});
+```
+
+**Example with specific time:**
+```ts
+await queue.add({
+  groupId: 'user:123',
+  data: { action: 'scheduled-report' },
+  runAt: new Date('2025-12-31T23:59:59Z'),
+});
+```
+
+## Worker Concurrency
+
+Workers support configurable concurrency to process multiple jobs in parallel from different groups:
+
+```ts
+const worker = new Worker({
+  queue,
+  concurrency: 8, // Process up to 8 jobs simultaneously
+  handler: async (job) => {
+    // Jobs from different groups can run in parallel
+    // Jobs from the same group still run sequentially
+  },
+});
+```
+
+**Benefits:**
+- Higher throughput for multi-group workloads
+- Efficient resource utilization
+- Still maintains per-group FIFO ordering
+
+**Considerations:**
+- Each job consumes memory and resources
+- Set concurrency based on job duration and system resources
+- Monitor Redis connection pool (ioredis default: 10 connections)
+
+## Logging
+
+Both Queue and Worker support optional logging for debugging and monitoring:
+
+```ts
+// Enable default logger
+const queue = new Queue({
+  redis,
+  namespace: 'orders',
+  logger: true, // Logs to console with queue name prefix
+});
+
+const worker = new Worker({
+  queue,
+  logger: true, // Logs to console with worker name prefix
+  handler: async (job) => { /* ... */ },
+});
+```
+
+**Custom logger:**
+```ts
+import type { LoggerInterface } from 'groupmq';
+
+const customLogger: LoggerInterface = {
+  debug: (msg: string, ...args: any[]) => { /* custom logging */ },
+  info: (msg: string, ...args: any[]) => { /* custom logging */ },
+  warn: (msg: string, ...args: any[]) => { /* custom logging */ },
+  error: (msg: string, ...args: any[]) => { /* custom logging */ },
+};
+
+const queue = new Queue({
+  redis,
+  namespace: 'orders',
+  logger: customLogger,
+});
+```
+
+**What gets logged:**
+- Job reservation and completion
+- Error handling and retries
+- Scheduler runs and delayed job promotions
+- Group locking and unlocking
+- Redis connection events
+- Performance warnings
 
 ## Repeatable jobs (cron/interval)
 
@@ -203,87 +329,173 @@ const recoveredCount = await queue.recoverDelayedGroups();
 
 ## Additional Methods
 
-### Queue Status
+### Queue Methods
 
 ```ts
-// Get job counts by state
+// Job counts and status
 const counts = await queue.getJobCounts();
 // { active: 5, waiting: 12, delayed: 3, total: 20, uniqueGroups: 8 }
 
-// Get unique groups that have jobs
-const groups = await queue.getUniqueGroups();
-// ['user:123', 'user:456', 'order:789']
+const activeCount = await queue.getActiveCount();
+const waitingCount = await queue.getWaitingCount();
+const delayedCount = await queue.getDelayedCount();
+const completedCount = await queue.getCompletedCount();
+const failedCount = await queue.getFailedCount();
 
-// Get count of unique groups
+// Get job IDs by status
+const activeJobIds = await queue.getActiveJobs();
+const waitingJobIds = await queue.getWaitingJobs();
+const delayedJobIds = await queue.getDelayedJobs();
+
+// Get Job instances by status
+const completedJobs = await queue.getCompletedJobs(limit); // returns Job[]
+const failedJobs = await queue.getFailedJobs(limit);
+
+// Group information
+const groups = await queue.getUniqueGroups(); // ['user:123', 'order:456']
 const groupCount = await queue.getUniqueGroupsCount();
-// 8
+const jobsInGroup = await queue.getGroupJobCount('user:123');
 
-// Get job IDs by state
-const jobs = await queue.getJobs();
-// { active: ['1', '2'], waiting: ['3', '4'], delayed: ['5'] }
+// Get specific job
+const job = await queue.getJob(jobId); // returns Job instance
+
+// Job manipulation
+await queue.remove(jobId);
+await queue.retry(jobId); // Re-enqueue a failed job
+await queue.promote(jobId); // Promote delayed job to waiting
+await queue.changeDelay(jobId, newDelayMs);
+await queue.updateData(jobId, newData);
+
+// Scheduler operations
+await queue.runSchedulerOnce(); // Manual scheduler run
+await queue.promoteDelayedJobs(); // Promote delayed jobs
+await queue.recoverDelayedGroups(); // Recover stuck groups
+
+// Cleanup and shutdown
+await queue.waitForEmpty(timeoutMs);
+await queue.close();
 ```
 
-### Worker Status
+### Job Instance Methods
+
+Jobs returned from `queue.getJob()`, `queue.getCompletedJobs()`, etc. have these methods:
 
 ```ts
-// Check if worker is processing a job
+const job = await queue.getJob(jobId);
+
+// Manipulate the job
+await job.remove();
+await job.retry();
+await job.promote();
+await job.changeDelay(newDelayMs);
+await job.updateData(newData);
+await job.update(newData); // Alias for updateData
+
+// Get job state
+const state = await job.getState(); // 'active' | 'waiting' | 'delayed' | 'completed' | 'failed'
+
+// Serialize job
+const json = job.toJSON();
+```
+
+### Worker Methods
+
+```ts
+// Check worker status
 const isProcessing = worker.isProcessing();
 
-// Get current job info (if any)
+// Get current job(s) being processed
 const currentJob = worker.getCurrentJob();
 // { job: ReservedJob, processingTimeMs: 1500 } | null
+
+// For concurrency > 1
+const currentJobs = worker.getCurrentJobs();
+// [{ job: ReservedJob, processingTimeMs: 1500 }, ...]
+
+// Get worker metrics
+const metrics = worker.getWorkerMetrics();
+// { jobsInProgress: 2, lastJobPickupTime: 1234567890, ... }
+
+// Graceful shutdown
+await worker.close(gracefulTimeoutMs);
 ```
 
-## CLI Monitor
+### Worker Events
 
-A built-in CLI tool for monitoring queue status in real-time:
+Workers emit events that you can listen to:
 
+```ts
+worker.on('ready', () => {
+  console.log('Worker is ready');
+});
+
+worker.on('completed', (job: Job) => {
+  console.log('Job completed:', job.id);
+});
+
+worker.on('failed', (job: Job) => {
+  console.log('Job failed:', job.id, job.failedReason);
+});
+
+worker.on('error', (error: Error) => {
+  console.error('Worker error:', error);
+});
+
+worker.on('closed', () => {
+  console.log('Worker closed');
+});
+
+worker.on('graceful-timeout', (job: Job) => {
+  console.log('Job exceeded graceful timeout:', job.id);
+});
+
+// Remove event listeners
+worker.off('completed', handler);
+worker.removeAllListeners();
+```
+
+### BullBoard Integration
+
+GroupMQ provides a BullBoard adapter for visual monitoring and management:
+
+```ts
+import { createBullBoard } from '@bull-board/api';
+import { ExpressAdapter } from '@bull-board/express';
+import { BullBoardGroupMQAdapter } from 'groupmq';
+import express from 'express';
+
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+createBullBoard({
+  queues: [
+    new BullBoardGroupMQAdapter(queue, {
+      displayName: 'Order Processing',
+      description: 'Processes customer orders',
+      readOnlyMode: false, // Allow job manipulation through UI
+    }),
+  ],
+  serverAdapter,
+});
+
+const app = express();
+app.use('/admin/queues', serverAdapter.getRouter());
+app.listen(3000, () => {
+  console.log('BullBoard running at http://localhost:3000/admin/queues');
+});
+```
+
+**Features:**
+- View job counts by status (active, waiting, delayed, completed, failed)
+- Browse and search jobs
+- View job details, data, and error messages
+- Retry failed jobs
+- Remove jobs
+- View queue metrics and statistics
+
+**Installation:**
 ```bash
-# Install dependencies first
-npm install
-
-# Monitor a queue (basic usage)
-npm run monitor -- --namespace orders
-
-# Custom Redis URL and poll interval
-npm run monitor -- --namespace orders --redis-url redis://localhost:6379 --interval 2000
-
-# Show help
-npm run monitor -- --help
-```
-
-The CLI displays:
-
-- Real-time job counts (active, waiting, delayed, total)
-- Number of unique groups
-- List of active groups
-- Updates every second (configurable)
-
-Example output:
-
-```
-╔════════════════════════════════════════════════════════════════════╗
-║                          GroupMQ Monitor                           ║
-╚════════════════════════════════════════════════════════════════════╝
-
-Namespace: orders
-Poll Interval: 1000ms
-Last Update: 2:30:45 PM
-
-Job Counts:
-  Active:           3
-  Waiting:         12
-  Delayed:          0
-  Total:           15
-
-Groups:
-  Unique Groups:    8
-
-Active Groups:
-  ├─ user:123
-  ├─ user:456
-  ├─ order:789
-  └─ payment:abc
+npm install @bull-board/api @bull-board/express
 ```
 
 ## How It Works
@@ -303,9 +515,9 @@ This section explains GroupMQ's internal architecture for contributors and those
 
 ### Key Concepts
 
-**Per-Group FIFO**: Jobs within the same `groupId` are processed in strict FIFO order based on `orderMs`. Only one job per group can be processed at a time.
+**Per-Group FIFO**: Jobs within the same `groupId` are processed in strict FIFO order based on `orderMs`. Only one job per group can be processed at a time across all workers.
 
-**Cross-Group Parallelism**: Different groups can be processed simultaneously by multiple workers. A worker with `concurrency: 8` can process 8 jobs from 8 different groups in parallel.
+**Cross-Group Parallelism**: Different groups can be processed simultaneously. A worker with `concurrency: 8` can process up to 8 jobs from different groups in parallel. Multiple workers can run independently for even higher throughput.
 
 **Group Locking**: When a job is reserved, its group is locked (`:lock:{groupId}`) for the duration of the job timeout. This prevents other workers from picking up jobs from the same group.
 
@@ -337,35 +549,53 @@ GroupMQ uses these Redis keys (all prefixed with `groupmq:{namespace}:`):
 
 #### Worker Loop
 
-The worker runs a continuous loop with these steps:
+The worker runs a continuous loop optimized for both single and concurrent processing:
 
+**For concurrency = 1 (sequential):**
 ```typescript
 while (!stopping) {
-  // 1. Run lightweight scheduler (every 100ms)
-  await queue.runSchedulerOnce(); // Promotes delayed jobs, processes repeats
+  // 1. Blocking reserve (waits for job, efficient)
+  const job = await queue.reserveBlocking(timeoutSec);
   
-  // 2. Try batch reservation (if concurrency > 1)
-  if (capacity > 0 && concurrency > 1) {
+  // 2. Process job synchronously
+  if (job) {
+    await processOne(job);
+  }
+  
+  // 3. Periodic scheduler run (every schedulerIntervalMs)
+  await queue.runSchedulerOnce(); // Promotes delayed jobs, processes repeats
+}
+```
+
+**For concurrency > 1 (parallel):**
+```typescript
+while (!stopping) {
+  // 1. Run lightweight scheduler periodically
+  await queue.runSchedulerOnce();
+  
+  // 2. Try batch reservation if we have capacity
+  const capacity = concurrency - jobsInProgress.size;
+  if (capacity > 0) {
     const jobs = await queue.reserveBatch(capacity);
-    // Process all jobs concurrently
+    // Process all jobs concurrently (fire and forget)
     for (const job of jobs) {
-      void processOne(job); // Fire and forget
+      void processOne(job);
     }
   }
   
-  // 3. Blocking reserve (waits for job)
-  const job = await queue.reserveBlocking(timeoutSec);
-  
-  // 4. Process job
+  // 3. Blocking reserve for remaining capacity
+  const job = await queue.reserveBlocking(blockingTimeoutSec);
   if (job) {
-    if (concurrency > 1) {
-      void processOne(job); // Process async
-    } else {
-      await processOne(job); // Process sync
-    }
+    void processOne(job); // Process async
   }
 }
 ```
+
+**Key optimizations:**
+- Batch reservation reduces Redis round-trips for concurrent workers
+- Blocking operations prevent wasteful polling
+- Heartbeat mechanism keeps jobs alive during long processing
+- Atomic completion + next reservation reduces latency
 
 #### Atomic Operations (Lua Scripts)
 
@@ -424,13 +654,18 @@ This ensures:
 **concurrency = 1** (Sequential):
 - Worker processes one job at a time
 - Uses blocking reserve with synchronous processing
-- Simplest mode, lowest memory
+- Simplest mode, lowest memory, lowest Redis overhead
+- Best for: CPU-intensive jobs, resource-constrained environments
 
 **concurrency > 1** (Parallel):
 - Worker attempts batch reservation first (lower latency)
-- Processes multiple jobs concurrently (different groups)
-- Falls back to blocking reserve if batch is empty
-- Higher throughput, can process multiple groups simultaneously
+- Processes multiple jobs concurrently (from different groups only)
+- Each job runs in parallel with its own heartbeat
+- Falls back to blocking reserve when batch is empty
+- Higher throughput, efficient for I/O-bound workloads
+- Best for: Network calls, database operations, API requests
+
+**Important:** Per-group FIFO ordering is maintained regardless of concurrency level. Multiple jobs from the same group never run in parallel.
 
 #### Error Handling and Retries
 
@@ -459,11 +694,20 @@ Periodic cleanup runs:
 
 ### Performance Characteristics
 
-- **Batch Operations**: `reserveBatch` reduces round-trips for high-concurrency workers
-- **Blocking Operations**: Efficient `BLPOP`-style blocking prevents polling
+**Benchmarks** (500 jobs, 4 workers, multi-process):
+- **Throughput**: 68-73 jobs/sec (500 jobs), 80-86 jobs/sec (5000 jobs)
+- **Latency**: P95 pickup ~5-5.5s, P95 processing ~45-50ms
+- **Memory**: ~120-145 MB per worker process
+- **CPU**: <1% average, <70% peak
+
+**Optimizations:**
+- **Batch Operations**: `reserveBatch` reduces round-trips for concurrent workers
+- **Blocking Operations**: Efficient Redis BLPOP-style blocking prevents wasteful polling
 - **Lua Scripts**: All critical paths are atomic, avoiding race conditions
+- **Atomic Completion**: Complete job + reserve next in single operation
 - **Minimal Data**: Jobs store only essential fields, keeps memory low
 - **Score-Based Ordering**: O(log N) insertions and retrievals via sorted sets
+- **Adaptive Behavior**: Scheduler intervals adjust based on ordering configuration
 
 ### Contributing
 
