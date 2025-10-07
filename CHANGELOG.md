@@ -1,3 +1,10 @@
+## [1.0.0-next.17](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.16...v1.0.0-next.17) (2025-10-07)
+
+
+### Bug Fixes
+
+* actually fix ordering again ([e48ff41](https://github.com/Openpanel-dev/groupmq/commit/e48ff41a664bc59710c8f297b809aa5ed89b2afe))
+
 ## [1.0.0-next.16](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.15...v1.0.0-next.16) (2025-10-07)
 
 
