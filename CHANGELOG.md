@@ -1,3 +1,16 @@
+## [1.0.0-next.18](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.17...v1.0.0-next.18) (2025-10-08)
+
+
+### Features
+
+* add stalled jobs and better close/disconnect handling ([652118b](https://github.com/Openpanel-dev/groupmq/commit/652118bbfb4a40f13815f6ed9ec89774de74b6a1))
+
+
+### Bug Fixes
+
+* make completion atomic (and some cleanup) ([35b10f4](https://github.com/Openpanel-dev/groupmq/commit/35b10f4488705b8b7b898884edc27298a6103ab0))
+* return job from eval instead of fetching job after add ([86de438](https://github.com/Openpanel-dev/groupmq/commit/86de438ca1993aeaa118ad7e280f0037064345f6))
+
 ## [1.0.0-next.17](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.16...v1.0.0-next.17) (2025-10-07)
 
 
