@@ -73,6 +73,43 @@ worker.run();
 - **At-least-once delivery** with configurable retries and exponential backoff
 - **Efficient blocking operations** - no wasteful polling
 - **Atomic operations** - all critical paths use Lua scripts for consistency
+- **Stalled job detection** - automatic recovery when workers crash
+- **Connection error handling** - exponential backoff and auto-reconnection
+- **Graceful shutdown** - wait for jobs to complete before exiting
+
+## Production-Ready Reliability
+
+GroupMQ includes production-ready features for fault tolerance and resilience:
+
+### Stalled Job Detection
+Automatically detects and recovers jobs when workers crash or lose connection:
+```ts
+const worker = new Worker({
+  queue,
+  handler,
+  stalledInterval: 30000,     // Check every 30 seconds
+  maxStalledCount: 1,         // Fail after 1 stall
+})
+
+worker.on('stalled', (jobId, groupId) => {
+  console.warn(`Job ${jobId} stalled and recovered`)
+})
+```
+
+### Connection Error Handling
+- Exponential backoff retry strategy (1s → 20s max)
+- Automatic reconnection with infinite retries for blocking connections
+- Smart error classification (connection vs application errors)
+
+### Graceful Shutdown
+```ts
+process.on('SIGTERM', async () => {
+  await worker.close(30000)  // Wait up to 30s for jobs to complete
+  process.exit(0)
+})
+```
+
+See the [Reliability Guide](https://openpanel-dev.github.io/groupmq/docs/reliability) for detailed configuration and best practices.
 
 ## Inspiration from BullMQ
 

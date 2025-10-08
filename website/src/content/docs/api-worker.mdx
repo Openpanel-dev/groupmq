@@ -48,6 +48,11 @@ new Worker({ queue, handler, heartbeatMs?, maxAttempts?, backoff?, ... })
 - `concurrency` - number of jobs to process concurrently (default 1)
 - `logger` - `true` to enable default logs or pass a Logger
 
+**Stalled Job Detection** (new):
+- `stalledInterval` - check interval for stalled jobs in ms (default: 30000)
+- `maxStalledCount` - max times a job can stall before failing (default: 1)
+- `stalledGracePeriod` - grace period before marking as stalled in ms (default: 0)
+
 ```
 
 ### Reserve and completion
@@ -67,6 +72,7 @@ await worker.run()
 - `closed`
 - `ioredis:close`
 - `graceful-timeout` - `(job)`
+- `stalled` - `(jobId, groupId)` - emitted when a stalled job is detected
 
 ```ts
 worker.on('ready', () => console.log('worker ready'))
@@ -74,6 +80,7 @@ worker.on('completed', (job) => console.log('done', job.id))
 worker.on('failed', (job) => console.log('failed', job.id, job.failedReason))
 worker.on('graceful-timeout', (job) => console.warn('timed out', job.id))
 worker.on('error', (err) => console.error('worker error', err))
+worker.on('stalled', (jobId, groupId) => console.warn('job stalled', jobId, groupId))
 ```
 
 ### Methods
@@ -112,6 +119,33 @@ await worker.close(30_000)
   - `'in-memory'`: Collects jobs during grace period before processing batch
     - Supports `orderingMaxWaitMultiplier` (max total wait time)
     - Supports `orderingGracePeriodDecay` (progressive wait reduction)
+
+### Stalled Job Recovery
+
+Workers automatically detect and recover stalled jobs (jobs whose worker crashed or lost connection):
+
+- Background checker runs every `stalledInterval` (default: 30s)
+- Detects jobs past their deadline + `stalledGracePeriod`
+- Recovers jobs by moving them back to waiting state
+- After `maxStalledCount` stalls, jobs are permanently failed
+- Emits `stalled` event for monitoring and alerting
+
+```ts
+const worker = new Worker({
+  queue,
+  handler: async (job) => { /* ... */ },
+  stalledInterval: 30000,      // Check every 30 seconds
+  maxStalledCount: 1,          // Fail after 1 stall
+  stalledGracePeriod: 0,       // No grace period
+})
+
+worker.on('stalled', (jobId, groupId) => {
+  console.warn(`Job ${jobId} stalled and recovered`)
+  metrics.increment('jobs.stalled')
+})
+```
+
+This ensures jobs aren't lost when workers crash unexpectedly.
 
 See the [Ordering Methods guide](/docs/ordering-methods) for detailed configuration options including advanced settings like grace period decay.
 

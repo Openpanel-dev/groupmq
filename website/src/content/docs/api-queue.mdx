@@ -316,6 +316,16 @@ Extend a job's visibility/lock. Usually handled by the worker heartbeat.
 await queue.heartbeat({ id: job.id, groupId: job.groupId })
 ```
 
+### checkStalledJobs(now, gracePeriod, maxStalledCount)
+
+Manually check for and recover stalled jobs. Returns array of `[jobId, groupId, action]` tuples. Usually called automatically by workers.
+
+```ts
+const now = Date.now()
+const results = await queue.checkStalledJobs(now, 1000, 1)
+// Results: ['job-123', 'group-1', 'recovered', 'job-456', 'group-2', 'failed', ...]
+```
+
 ### close()
 
 Close underlying Redis connections.

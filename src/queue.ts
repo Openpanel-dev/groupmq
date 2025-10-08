@@ -1391,12 +1391,12 @@ export class Queue<T = any> {
 
   /**
    * Check if an error is a Redis connection error (should retry)
-   * Aligned with BullMQ's conservative approach
+   * Conservative approach: only connection closed and ECONNREFUSED
    */
   isConnectionError(err: any): boolean {
     if (!err) return false;
 
-    const message = err.message || '';
+    const message = `${err.message || ''}`;
 
     return (
       message === 'Connection is closed.' || message.includes('ECONNREFUSED')
@@ -1845,6 +1845,29 @@ export class Queue<T = any> {
       'waiting-children': 0,
       prioritized: 0,
     };
+  }
+
+  /**
+   * Check for stalled jobs and recover or fail them
+   * Returns array of [jobId, groupId, action] tuples
+   */
+  async checkStalledJobs(
+    now: number,
+    gracePeriod: number,
+    maxStalledCount: number,
+  ): Promise<string[]> {
+    try {
+      const results = await evalScript<string[]>(this.r, 'check-stalled', [
+        this.ns,
+        String(now),
+        String(gracePeriod),
+        String(maxStalledCount),
+      ]);
+      return results || [];
+    } catch (error) {
+      this.logger.error('Error checking stalled jobs:', error);
+      return [];
+    }
   }
 
   /**

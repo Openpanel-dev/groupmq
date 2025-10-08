@@ -15,6 +15,7 @@ export interface WorkerEvents<T = any>
   completed: (job: Job<T>) => void;
   'ioredis:close': () => void;
   'graceful-timeout': (job: Job<T>) => void;
+  stalled: (jobId: string, groupId: string) => void;
 }
 
 class TypedEventEmitter<
@@ -252,6 +253,51 @@ export type WorkerOptions<T> = {
    * - Single-threaded requirements: Keep at 1
    */
   concurrency?: number;
+
+  /**
+   * Interval in milliseconds between stalled job checks.
+   * Stalled jobs are those whose worker crashed or lost connection.
+   *
+   * @default 30000 (30 seconds)
+   * @example 60000 // Check every minute for lower overhead
+   * @example 10000 // Check every 10 seconds for faster recovery
+   *
+   * **When to adjust:**
+   * - Fast recovery needed: Decrease (10-20s)
+   * - Lower Redis overhead: Increase (60s+)
+   * - Unreliable workers: Decrease for faster detection
+   */
+  stalledInterval?: number;
+
+  /**
+   * Maximum number of times a job can become stalled before being failed.
+   * A job becomes stalled when its worker crashes or loses connection.
+   *
+   * @default 1
+   * @example 2 // Allow jobs to stall twice before failing
+   * @example 0 // Never fail jobs due to stalling (not recommended)
+   *
+   * **When to adjust:**
+   * - Unreliable infrastructure: Increase to tolerate more failures
+   * - Critical jobs: Increase to allow more recovery attempts
+   * - Quick failure detection: Keep at 1
+   */
+  maxStalledCount?: number;
+
+  /**
+   * Grace period in milliseconds before a job is considered stalled.
+   * Jobs are only marked as stalled if their deadline has passed by this amount.
+   *
+   * @default 0 (no grace period)
+   * @example 5000 // 5 second grace period for clock skew
+   * @example 1000 // 1 second grace for network latency
+   *
+   * **When to adjust:**
+   * - Clock skew between servers: Add 1-5s grace
+   * - Network latency: Add 1-2s grace
+   * - Strict timing: Keep at 0
+   */
+  stalledGracePeriod?: number;
 };
 
 const defaultBackoff: BackoffStrategy = (attempt) => {
@@ -281,6 +327,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private atomicCompletion: boolean;
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
+
+  // Stalled job detection
+  private stalledCheckTimer?: NodeJS.Timeout;
+  private stalledInterval: number;
+  private maxStalledCount: number;
+  private stalledGracePeriod: number;
 
   // Track all jobs in progress (for all concurrency levels)
   private jobsInProgress = new Set<{ job: ReservedJob<T>; ts: number }>();
@@ -346,6 +398,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
+    // Initialize stalled job detection settings
+    this.stalledInterval = opts.stalledInterval ?? 30000; // 30 seconds default (like BullMQ)
+    this.maxStalledCount = opts.maxStalledCount ?? 1; // Fail after 1 stall (like BullMQ)
+    this.stalledGracePeriod = opts.stalledGracePeriod ?? 0; // No grace period by default
+
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
   }
@@ -402,18 +459,46 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     try {
       this.blockingClient = this.q.redis.duplicate({
         enableAutoPipelining: true,
+        // Infinite retries for blocking connections to prevent "Max retries exceeded" errors
+        maxRetriesPerRequest: null,
+        // Exponential backoff retry strategy
+        retryStrategy: (times: number) => {
+          return Math.max(Math.min(Math.exp(times) * 1000, 20000), 1000);
+        },
       });
 
       // Add reconnection handlers for resilience
       this.blockingClient.on('error', (err) => {
-        this.logger.warn('Blocking client error:', err);
+        if (!this.q.isConnectionError(err)) {
+          this.logger.error('Blocking client error (non-connection):', err);
+        } else {
+          this.logger.warn('Blocking client connection error:', err.message);
+        }
+        this.emit('error', err instanceof Error ? err : new Error(String(err)));
       });
+
       this.blockingClient.on('close', () => {
-        this.logger.warn(
-          'Blocking client disconnected, will reconnect on next operation',
-        );
+        // Only log close if not during shutdown
+        if (!this.stopping && !this.closed) {
+          this.logger.warn(
+            'Blocking client disconnected, will reconnect on next operation',
+          );
+        }
       });
-    } catch (_e) {
+
+      this.blockingClient.on('reconnecting', () => {
+        if (!this.stopping && !this.closed) {
+          this.logger.info('Blocking client reconnecting...');
+        }
+      });
+
+      this.blockingClient.on('ready', () => {
+        if (!this.stopping && !this.closed) {
+          this.logger.info('Blocking client ready');
+        }
+      });
+    } catch (err) {
+      this.logger.error('Failed to create blocking client:', err);
       this.blockingClient = null; // fall back to queue's blocking client
     }
 
@@ -445,9 +530,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     // Start stuck detection monitoring
     this.startStuckDetection();
 
+    // Start stalled job checker for automatic recovery
+    this.startStalledChecker();
+
     let blockUntil = 0;
     let connectionRetries = 0;
-    const maxConnectionRetries = 5;
+    const maxConnectionRetries = 10; // Allow more retries with exponential backoff
 
     // BullMQ-style async queue for clean promise management
     const asyncFifoQueue = new AsyncFifoQueue<void | ReservedJob<T> | null>(
@@ -608,11 +696,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           asyncFifoQueue.add(processingPromise);
         }
       } catch (err) {
+        if (this.stopping) {
+          return;
+        }
         // Distinguish between connection errors (retry) and other errors (log and continue)
         const isConnErr = this.q.isConnectionError(err);
 
         if (isConnErr) {
-          // Connection error - implement retry logic with backoff
+          // Connection error - retry with exponential backoff
           connectionRetries++;
 
           this.logger.error(
@@ -630,11 +721,19 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
                 `Max connection retries (${maxConnectionRetries}) exceeded - worker continuing with backoff`,
               ),
             );
-            await this.delay(5000); // Wait 5 seconds before continuing
+            // Use maximum backoff delay before continuing
+            await this.delay(20000);
             connectionRetries = 0; // Reset to continue trying
           } else {
-            // Exponential delay before retry (1s, 2s, 3s, 4s, 5s)
-            await this.delay(1000 * connectionRetries);
+            // Exponential backoff with 1s min, 20s max
+            const delayMs = Math.max(
+              Math.min(Math.exp(connectionRetries) * 1000, 20000),
+              1000,
+            );
+            this.logger.debug(
+              `Waiting ${Math.round(delayMs)}ms before retry (exponential backoff)`,
+            );
+            await this.delay(delayMs);
           }
         } else {
           // Non-connection error (programming error, Lua script error, etc.)
@@ -799,6 +898,68 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   /**
+   * Start the stalled job checker
+   * Checks periodically for jobs that exceeded their deadline and recovers or fails them
+   */
+  private startStalledChecker(): void {
+    if (this.stalledInterval <= 0) {
+      return; // Disabled
+    }
+
+    this.stalledCheckTimer = setInterval(async () => {
+      try {
+        await this.checkStalled();
+      } catch (err) {
+        this.logger.error('Error in stalled job checker:', err);
+        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+      }
+    }, this.stalledInterval);
+  }
+
+  /**
+   * Check for stalled jobs and recover or fail them
+   * A job is stalled when its worker crashed or lost connection
+   */
+  private async checkStalled(): Promise<void> {
+    if (this.stopping || this.closed) {
+      return;
+    }
+
+    try {
+      const now = Date.now();
+      const results = await this.q.checkStalledJobs(
+        now,
+        this.stalledGracePeriod,
+        this.maxStalledCount,
+      );
+
+      if (results.length > 0) {
+        // Process results in groups of 3: [jobId, groupId, action]
+        for (let i = 0; i < results.length; i += 3) {
+          const jobId = results[i];
+          const groupId = results[i + 1];
+          const action = results[i + 2];
+
+          if (action === 'recovered') {
+            this.logger.info(
+              `Recovered stalled job ${jobId} from group ${groupId}`,
+            );
+            this.emit('stalled', jobId, groupId);
+          } else if (action === 'failed') {
+            this.logger.warn(
+              `Failed stalled job ${jobId} from group ${groupId} (exceeded max stalled count)`,
+            );
+            this.emit('stalled', jobId, groupId);
+          }
+        }
+      }
+    } catch (err) {
+      // Don't throw, just log - stalled checker should be resilient
+      this.logger.error('Error checking stalled jobs:', err);
+    }
+  }
+
+  /**
    * Determine if we should warn about empty reserves based on context
    */
   private shouldWarnAboutEmptyReserves(): boolean {
@@ -926,11 +1087,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
    * @param gracefulTimeoutMs Maximum time to wait for current job to finish (default: 30 seconds)
    */
   async close(gracefulTimeoutMs = 30_000): Promise<void> {
+    this.stopping = true;
     // Give some time if we just received a job
     // Otherwise jobsInProgress will be 0 and we will exit immediately
     await this.delay(100);
-
-    this.stopping = true;
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
@@ -944,6 +1104,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       clearInterval(this.stuckDetectionTimer);
     }
 
+    if (this.stalledCheckTimer) {
+      clearInterval(this.stalledCheckTimer);
+    }
+
     // Wait for jobs to finish first
     const startTime = Date.now();
     while (
@@ -953,14 +1117,21 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       await sleep(100);
     }
 
-    // Close the blocking client immediately to interrupt any blocking operations
-    // This will cause the run loop to exit faster
+    // Close the blocking client to interrupt any blocking operations
     if (this.blockingClient) {
       try {
-        // Use disconnect() instead of quit() for immediate termination
-        this.blockingClient.disconnect();
-      } catch (_e) {
-        // ignore blocking client close errors
+        if (this.jobsInProgress.size > 0 && gracefulTimeoutMs > 0) {
+          // Graceful: use quit() to allow in-flight commands to complete
+          this.logger.debug('Gracefully closing blocking client (quit)...');
+          await this.blockingClient.quit();
+        } else {
+          // Force or no jobs: use disconnect() for immediate termination
+          this.logger.debug('Force closing blocking client (disconnect)...');
+          this.blockingClient.disconnect();
+        }
+      } catch (err) {
+        // Swallow errors during close
+        this.logger.debug('Error closing blocking client:', err);
       }
       this.blockingClient = null;
     }
@@ -1275,18 +1446,45 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let heartbeatDelayTimer: NodeJS.Timeout | undefined;
 
     const startHeartbeat = () => {
-      // More conservative heartbeat: use 1/4 of job timeout instead of 1/2
-      // This reduces Redis calls while still providing safety
+      // Extend lock every jobTimeout/2 for more aggressive renewal
       const minInterval = Math.max(
         this.hbMs,
-        Math.floor((this.q.jobTimeoutMs || 30000) / 4),
+        Math.floor((this.q.jobTimeoutMs || 30000) / 2),
       );
+
+      this.logger.debug(
+        `Starting heartbeat for job ${job.id} (interval: ${minInterval}ms)`,
+      );
+
       hbTimer = setInterval(async () => {
         try {
-          await this.q.heartbeat(job);
+          const result = await this.q.heartbeat(job);
+          if (result === 0) {
+            // Job no longer exists or is not in processing state
+            this.logger.warn(
+              `Heartbeat failed for job ${job.id} - job may have been removed or completed elsewhere`,
+            );
+            // Stop heartbeat since job is gone
+            if (hbTimer) {
+              clearInterval(hbTimer);
+            }
+          }
         } catch (e) {
+          // Only log heartbeat errors if they're not connection errors during shutdown
+          const isConnErr = this.q.isConnectionError(e);
+          if (!isConnErr || !this.stopping) {
+            this.logger.error(
+              `Heartbeat error for job ${job.id}:`,
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+
           this.onError?.(e, job);
-          this.emit('error', e instanceof Error ? e : new Error(String(e)));
+
+          // Only emit error if not a connection error during shutdown
+          if (!isConnErr || !this.stopping) {
+            this.emit('error', e instanceof Error ? e : new Error(String(e)));
+          }
         }
       }, minInterval);
     };

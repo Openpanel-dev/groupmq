@@ -1,0 +1,168 @@
+---
+title: Stalled Job Detection
+description: Detect and recover from worker crashes and connection failures.
+---
+
+## What are Stalled Jobs?
+
+Stalled jobs occur when a worker crashes or loses connection while processing a job. Without detection and recovery, these jobs would remain stuck in the processing state indefinitely, blocking the queue.
+
+## How It Works
+
+1. **Background Checker**: Runs every `stalledInterval` (default: 30 seconds)
+2. **Detection**: Finds jobs in processing state past their deadline + grace period
+3. **Recovery**: Moves stalled jobs back to waiting state for retry
+4. **Failure**: After `maxStalledCount` stalls, jobs are permanently failed
+
+## Configuration
+
+```ts
+const worker = new Worker({
+  queue,
+  handler: async (job) => { /* ... */ },
+  
+  // Stalled job detection
+  stalledInterval: 30000,      // Check every 30 seconds
+  maxStalledCount: 1,          // Fail after 1 stall
+  stalledGracePeriod: 0,       // No grace period (use for clock skew)
+})
+```
+
+## Monitoring
+
+Listen to the `stalled` event to monitor and alert on stalled jobs:
+
+```ts
+worker.on('stalled', (jobId, groupId) => {
+  console.warn(`Job ${jobId} from group ${groupId} was stalled`)
+  
+  // Alert your monitoring system
+  metrics.increment('jobs.stalled', { groupId })
+  
+  // Note: Job has already been recovered automatically
+})
+```
+
+## When Jobs Become Stalled
+
+Jobs become stalled in production when:
+- Worker process crashes (SIGKILL, OOM, etc.)
+- Worker loses Redis connection permanently
+- Worker hangs indefinitely in user code
+- Server/container is terminated abruptly
+
+## Configuration Recommendations
+
+**Default (Most Use Cases)**:
+```ts
+{
+  stalledInterval: 30000,    // 30 seconds
+  maxStalledCount: 1,        // Fail after 1 stall
+  stalledGracePeriod: 0,     // No grace period
+}
+```
+
+**High Reliability**:
+```ts
+{
+  stalledInterval: 15000,    // Check more frequently
+  maxStalledCount: 2,        // Allow 2 stalls before failing
+  stalledGracePeriod: 5000,  // 5s grace for clock skew
+}
+```
+
+**Low Overhead**:
+```ts
+{
+  stalledInterval: 60000,    // Check every minute
+  maxStalledCount: 1,        // Fail fast
+  stalledGracePeriod: 0,     // No grace period
+}
+```
+
+## Manual API
+
+You can also manually check for stalled jobs:
+
+```ts
+// Check for stalled jobs manually
+const result = await queue.checkStalledJobs()
+console.log(`Found ${result.stalled} stalled jobs`)
+```
+
+## Best Practices
+
+### Production Checklist
+
+✅ **Enable stalled job detection** with appropriate intervals
+✅ **Monitor the `stalled` event** for alerting
+✅ **Keep `maxStalledCount` low** (1-2) for faster failure detection
+✅ **Test worker crashes** in staging to verify recovery
+
+### Error Handling Pattern
+
+```ts
+const worker = new Worker({
+  queue,
+  handler: async (job) => {
+    try {
+      // Your job logic
+      return await processJob(job.data)
+    } catch (error) {
+      // Application errors will be retried according to maxAttempts
+      throw error
+    }
+  },
+  
+  // Stalled job detection
+  stalledInterval: 30000,
+  maxStalledCount: 1,
+  maxAttempts: 3,
+})
+
+// Monitor stalled jobs
+worker.on('stalled', (jobId, groupId) => {
+  logger.warn(`Job ${jobId} stalled`)
+  metrics.increment('jobs.stalled')
+})
+
+worker.on('failed', (job) => {
+  logger.error(`Job ${job.id} failed permanently`, {
+    attempts: job.attemptsMade,
+    reason: job.failedReason,
+  })
+})
+```
+
+## Troubleshooting
+
+### Jobs Keep Stalling
+
+**Symptoms**: High `stalled` event frequency
+
+**Possible Causes**:
+1. Workers crashing frequently - check logs
+2. `jobTimeoutMs` too short - increase timeout
+3. Long-running jobs - optimize or increase timeout
+4. Memory issues - check for leaks
+
+**Solutions**:
+- Increase `jobTimeoutMs` for long operations
+- Increase `stalledGracePeriod` if clock skew is an issue
+- Fix memory leaks causing worker crashes
+- Scale horizontally with more workers
+
+### Jobs Timeout During Processing
+
+**Symptoms**: Jobs fail with timeout even though processing
+
+**Possible Causes**:
+1. Heartbeat not running (blocking code)
+2. `jobTimeoutMs` too short
+3. Network issues preventing heartbeat
+
+**Solutions**:
+- Avoid blocking the event loop in handler
+- Increase `jobTimeoutMs`
+- Optimize slow database queries
+- Use async operations properly
