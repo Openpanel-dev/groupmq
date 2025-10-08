@@ -55,61 +55,17 @@ worker.run();
 
 ## Key Features
 
-### Simplified API
 
-- **No more polling vs blocking confusion**, always uses efficient blocking operations
-- **Clear naming** - `jobTimeoutMs` instead of confusing `visibilityTimeoutMs`
-- **Automatic namespace prefixing**, all namespaces get `groupmq:` prefix to avoid conflicts
-- **Unified configuration**, no duplicate options between Queue and Worker
-- **Built-in logging**, optional logger for debugging and monitoring (both Queue and Worker)
+## Key Features
 
-### Performance & Reliability
-
-- **High throughput** - 70+ jobs/sec with 4 workers, 80+ jobs/sec at scale
-- **1 in-flight job per group** via per-group locks
-- **Parallel processing** across different groups with configurable concurrency
-- **FIFO ordering** within each group by `orderMs` with stable tiebreaking
-- **Multiple ordering strategies** - `'none'`, `'scheduler'`, or `'in-memory'` for handling out-of-order arrivals
-- **At-least-once delivery** with configurable retries and exponential backoff
-- **Efficient blocking operations** - no wasteful polling
-- **Atomic operations** - all critical paths use Lua scripts for consistency
-- **Stalled job detection** - automatic recovery when workers crash
-- **Connection error handling** - exponential backoff and auto-reconnection
-- **Graceful shutdown** - wait for jobs to complete before exiting
-
-## Production-Ready Reliability
-
-GroupMQ includes production-ready features for fault tolerance and resilience:
-
-### Stalled Job Detection
-Automatically detects and recovers jobs when workers crash or lose connection:
-```ts
-const worker = new Worker({
-  queue,
-  handler,
-  stalledInterval: 30000,     // Check every 30 seconds
-  maxStalledCount: 1,         // Fail after 1 stall
-})
-
-worker.on('stalled', (jobId, groupId) => {
-  console.warn(`Job ${jobId} stalled and recovered`)
-})
-```
-
-### Connection Error Handling
-- Exponential backoff retry strategy (1s → 20s max)
-- Automatic reconnection with infinite retries for blocking connections
-- Smart error classification (connection vs application errors)
-
-### Graceful Shutdown
-```ts
-process.on('SIGTERM', async () => {
-  await worker.close(30000)  // Wait up to 30s for jobs to complete
-  process.exit(0)
-})
-```
-
-See the [Reliability Guide](https://openpanel-dev.github.io/groupmq/docs/reliability) for detailed configuration and best practices.
+- **Per-group FIFO ordering** - Jobs within the same group process in strict order, perfect for user workflows, data pipelines, and sequential operations
+- **Parallel processing across groups** - Process multiple groups simultaneously while maintaining order within each group
+- **BullMQ-compatible API** - Familiar interface with enhanced group-based capabilities
+- **High performance** - High throughput with low latency ([see benchmarks](https://openpanel-dev.github.io/groupmq/benchmarks/))
+- **Built-in ordering strategies** - Handle out-of-order job arrivals with `'none'`, `'scheduler'`, or `'in-memory'` methods
+- **Automatic recovery** - Stalled job detection and connection error handling with exponential backoff
+- **Production ready** - Atomic operations, graceful shutdown, and comprehensive logging
+- **Zero polling** - Efficient blocking operations prevent wasteful Redis calls
 
 ## Inspiration from BullMQ
 
@@ -134,11 +90,14 @@ type QueueOptions = {
   jobTimeoutMs?: number;            // Job processing timeout (default: 30000ms)
   maxAttempts?: number;             // Default max retry attempts (default: 3)
   reserveScanLimit?: number;        // Groups to scan when reserving (default: 20)
-  keepCompleted?: number;           // Number of completed jobs to retain (default: 100)
-  keepFailed?: number;              // Number of failed jobs to retain (default: 100)
+  keepCompleted?: number;           // Number of completed jobs to retain (default: 0)
+  keepFailed?: number;              // Number of failed jobs to retain (default: 0)
   schedulerLockTtlMs?: number;      // Scheduler lock TTL (default: 1500ms)
   orderingMethod?: OrderingMethod;  // Ordering strategy (default: 'none')
   orderingWindowMs?: number;        // Time window for ordering (required for non-'none' methods)
+  orderingMaxWaitMultiplier?: number; // Max grace period multiplier for in-memory (default: 3)
+  orderingGracePeriodDecay?: number;  // Grace period decay factor for in-memory (default: 1.0)
+  orderingMaxBatchSize?: number;      // Max jobs to collect in batch for in-memory (default: 10)
 };
 
 type OrderingMethod = 'none' | 'scheduler' | 'in-memory';
@@ -160,15 +119,18 @@ type WorkerOptions<T> = {
   name?: string;                             // Worker name for logging (default: queue.name)
   logger?: boolean | LoggerInterface;        // Enable logging (default: false)
   concurrency?: number;                      // Number of jobs to process in parallel (default: 1)
-  heartbeatMs?: number;                      // Heartbeat interval (default: jobTimeoutMs/3)
+  heartbeatMs?: number;                      // Heartbeat interval (default: Math.max(1000, jobTimeoutMs/3))
   onError?: (err: unknown, job?: ReservedJob<T>) => void; // Error handler
   maxAttempts?: number;                      // Max retry attempts (default: queue.maxAttempts)
-  backoff?: BackoffStrategy;                 // Retry backoff function
+  backoff?: BackoffStrategy;                 // Retry backoff function (default: exponential with jitter)
   enableCleanup?: boolean;                   // Periodic cleanup (default: true)
   cleanupIntervalMs?: number;                // Cleanup frequency (default: 60000ms)
   schedulerIntervalMs?: number;              // Scheduler frequency (default: adaptive)
   blockingTimeoutSec?: number;               // Blocking reserve timeout (default: 5s)
   atomicCompletion?: boolean;                // Atomic completion + next reserve (default: true)
+  stalledInterval?: number;                  // Check if stalled every N ms (default: 30000)
+  maxStalledCount?: number;                  // Fail after N stalls (default: 1)
+  stalledGracePeriod?: number;               // Grace period before considering stalled (default: 0)
 };
 
 type BackoffStrategy = (attempt: number) => number; // returns delay in ms
@@ -258,6 +220,9 @@ const worker = new Worker({
 ```
 
 **Custom logger:**
+
+Works out of the box with both `pino` and `winston`
+
 ```ts
 import type { LoggerInterface } from 'groupmq';
 
@@ -522,44 +487,6 @@ app.listen(3000, () => {
 });
 ```
 
-**Features:**
-- View job counts by status (active, waiting, delayed, completed, failed)
-- Browse and search jobs
-- View job details, data, and error messages
-- Retry failed jobs
-- Remove jobs
-- View queue metrics and statistics
-
-**Installation:**
-```bash
-npm install @bull-board/api @bull-board/express
-```
-
-## How It Works
-
-This section explains GroupMQ's internal architecture for contributors and those interested in understanding the implementation.
-
-### High-Level Flow
-
-```
-1. Job Added → Enqueued to group's sorted set
-2. Group Added → `:ready` set (if not locked)
-3. Worker Reserves → Picks job from ready group, locks group
-4. Worker Processes → Executes handler function
-5. Job Completes → Unlocks group, re-adds to `:ready` if more jobs
-6. Repeat → Next worker picks up next job from group
-```
-
-### Key Concepts
-
-**Per-Group FIFO**: Jobs within the same `groupId` are processed in strict FIFO order based on `orderMs`. Only one job per group can be processed at a time across all workers.
-
-**Cross-Group Parallelism**: Different groups can be processed simultaneously. A worker with `concurrency: 8` can process up to 8 jobs from different groups in parallel. Multiple workers can run independently for even higher throughput.
-
-**Group Locking**: When a job is reserved, its group is locked (`:lock:{groupId}`) for the duration of the job timeout. This prevents other workers from picking up jobs from the same group.
-
-**Ready Set**: The `:ready` sorted set contains all groups that have jobs waiting and are not currently locked. Workers scan this set to find work.
-
 ### Detailed Architecture
 
 #### Redis Data Structures
@@ -574,6 +501,7 @@ GroupMQ uses these Redis keys (all prefixed with `groupmq:{namespace}:`):
 - **`:processing:{jobId}`**, hash with processing metadata (groupId, deadlineAt)
 - **`:delayed`**, sorted set of delayed jobs, ordered by runAt timestamp
 - **`:completed`**, sorted set of completed job IDs (for retention)
+- **`:failed`**, sorted set of failed job IDs (for retention)
 - **`:repeats`**, hash of repeating job definitions (groupId → config)
 
 #### Job Lifecycle States
@@ -582,7 +510,7 @@ GroupMQ uses these Redis keys (all prefixed with `groupmq:{namespace}:`):
 2. **Delayed**, job is in `:delayed` (scheduled for future)
 3. **Active**, job is in `:processing` and group is locked
 4. **Completed**, job is in `:completed` (retention)
-5. **Failed**, job exceeded maxAttempts, moved to completed with failed status
+5. **Failed**, job exceeded maxAttempts, moved to `:failed` (retention)
 
 #### Worker Loop
 
@@ -675,16 +603,18 @@ The critical fix in step 6 ensures that after a job completes, the group becomes
 Jobs are ordered using a composite score:
 
 ```typescript
-score = (orderMs * 10000) + seq
+score = (orderMs - baseEpoch) * 1000 + seq
 ```
 
 - `orderMs`, user-provided timestamp for event ordering
-- `seq`, auto-incrementing sequence for tiebreaking
+- `baseEpoch`, fixed epoch timestamp (1704067200000) to keep scores manageable
+- `seq`, auto-incrementing sequence for tiebreaking (resets daily to prevent overflow)
 
 This ensures:
 - Jobs with earlier `orderMs` process first
 - Jobs with same `orderMs` process in submission order
 - Score is stable and sortable
+- Daily sequence reset prevents integer overflow
 
 #### Concurrency Modes
 
@@ -727,15 +657,25 @@ Periodic cleanup runs:
 2. **Process Repeats**: Enqueue next occurrence of repeating jobs
 3. **Recover Stale Locks**: Find expired locks in `:processing` and unlock groups
 4. **Recover Delayed Groups**: Handle groups stuck due to ordering delays
-5. **Trim Completed**: Remove old completed jobs per retention policy
+5. **Trim Completed/Failed**: Remove old completed and failed jobs per retention policy
 
 ### Performance Characteristics
 
-**Benchmarks** (500 jobs, 4 workers, multi-process):
+**Latest Benchmarks** (MacBook M2, 500 jobs, 4 workers, multi-process):
+
+#### GroupMQ Performance
 - **Throughput**: 68-73 jobs/sec (500 jobs), 80-86 jobs/sec (5000 jobs)
 - **Latency**: P95 pickup ~5-5.5s, P95 processing ~45-50ms
 - **Memory**: ~120-145 MB per worker process
 - **CPU**: <1% average, <70% peak
+
+#### vs BullMQ Comparison
+GroupMQ maintains competitive performance while adding per-group FIFO ordering guarantees:
+- **Similar throughput** for group-based workloads
+- **Better job ordering** with guaranteed per-group FIFO processing
+- **Atomic operations** reduce race conditions and improve reliability
+
+For detailed benchmark results and comparisons over time, see our [Performance Benchmarks](https://openpanel-dev.github.io/groupmq/benchmarks/) page.
 
 **Optimizations:**
 - **Batch Operations**: `reserveBatch` reduces round-trips for concurrent workers
@@ -748,13 +688,10 @@ Periodic cleanup runs:
 
 ### Contributing
 
-When modifying GroupMQ:
+Contributions are welcome! When making changes:
 
-1. **Lua Scripts**: If changing Redis operations, update scripts in `src/lua/`
-2. **Run Copy Script**: `node scripts/copy-lua.mjs` to update `dist/lua/`
-3. **Add Tests**: All features must have passing tests
-4. **Test Atomicity**: Consider race conditions and concurrent worker scenarios
-5. **Benchmark**: Run `npm run benchmark` to verify performance isn't degraded
+1. **Run tests and benchmarks** before and after your changes to verify everything works correctly
+2. **Add tests** for any new features
 
 ## Testing
 

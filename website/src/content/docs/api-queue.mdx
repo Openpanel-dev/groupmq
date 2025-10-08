@@ -21,6 +21,7 @@ GroupMQ provides three strategies for handling out-of-order job arrivals:
 
 - **`orderingMaxWaitMultiplier`** (default: `3`) - Maximum wait time multiplier. Total wait never exceeds `orderingWindowMs × multiplier`.
 - **`orderingGracePeriodDecay`** (default: `1.0`) - Decay factor applied each time grace period resets. Values: `0.5` to `1.0`. Use `0.8-0.9` to process continuous streams faster.
+- **`orderingMaxBatchSize`** (default: `10`) - Max jobs to collect in batch for in-memory (default: 10)
 
 See the [Ordering Methods guide](/docs/ordering-methods) for detailed comparison and examples.
 
@@ -40,6 +41,7 @@ const queue = new Queue<{ foo: string }>({
   orderingWindowMs: 0, // required for 'scheduler' and 'in-memory' methods
   orderingMaxWaitMultiplier: 3, // (optional) default: 3, max wait = windowMs × multiplier
   orderingGracePeriodDecay: 1.0, // (optional) default: 1.0, decay factor for 'in-memory'
+  orderingMaxBatchSize?: number;      // Max jobs to collect in batch for in-memory (default: 10)
   schedulerLockTtlMs: 1500, // (optional) default: 1500ms, controls min repeat interval
 })
 ```
