@@ -705,6 +705,10 @@ export class Queue<T = any> {
     return this.defaultMaxAttempts;
   }
 
+  get orderingWindowMs(): number {
+    return this._schedulerBufferMs || this._graceCollectionMs || 0;
+  }
+
   async add(opts: AddOptions<T>): Promise<JobEntity<T>> {
     const maxAttempts = opts.maxAttempts ?? this.defaultMaxAttempts;
     const orderMs = opts.orderMs ?? Date.now();
@@ -856,7 +860,7 @@ export class Queue<T = any> {
    * Complete a job AND record metadata in a single atomic operation.
    * This is the efficient internal method used by workers.
    */
-  private async completeWithMetadata(
+  public async completeWithMetadata(
     job: { id: string; groupId: string },
     result: unknown,
     meta: {
@@ -886,26 +890,42 @@ export class Queue<T = any> {
    * Atomically complete a job and try to reserve the next job from the same group
    * This prevents race conditions where other workers can steal subsequent jobs from the same group
    */
+
   /**
-   * Atomically complete a job and reserve the next job from the same group.
-   * Note: Job metadata recording is handled separately by recordCompleted().
+   * Atomically complete a job with metadata and reserve the next job from the same group.
    */
-  async completeAndReserveNext(
+  async completeAndReserveNextWithMetadata(
     completedJobId: string,
     groupId: string,
+    handlerResult: unknown,
+    meta: {
+      processedOn: number;
+      finishedOn: number;
+      attempts: number;
+      maxAttempts: number;
+    },
   ): Promise<ReservedJob<T> | null> {
     const now = Date.now();
 
     try {
       const result = await evalScript<string | null>(
         this.r,
-        'complete-and-reserve-next',
+        'complete-and-reserve-next-with-metadata',
         [
           this.ns,
           completedJobId,
           groupId,
+          'completed',
+          String(meta.finishedOn),
+          JSON.stringify(handlerResult ?? null),
+          String(this.keepCompleted),
+          String(this.keepFailed),
+          String(meta.processedOn),
+          String(meta.finishedOn),
+          String(meta.attempts),
+          String(meta.maxAttempts),
           String(now),
-          String(this.vt),
+          String(this.jobTimeoutMs),
           String(this._schedulerBufferMs),
         ],
       );
@@ -918,7 +938,7 @@ export class Queue<T = any> {
       const parts = result.split('||DELIMITER||');
       if (parts.length !== 10) {
         this.logger.error(
-          'Queue completeAndReserveNext: unexpected result format:',
+          'Queue completeAndReserveNextWithMetadata: unexpected result format:',
           result,
         );
         return null;
@@ -931,7 +951,7 @@ export class Queue<T = any> {
         attempts,
         maxAttempts,
         seq,
-        enqueuedAt,
+        enq,
         orderMs,
         score,
         deadline,
@@ -944,13 +964,16 @@ export class Queue<T = any> {
         attempts: parseInt(attempts, 10),
         maxAttempts: parseInt(maxAttempts, 10),
         seq: parseInt(seq, 10),
-        timestamp: parseInt(enqueuedAt, 10),
+        timestamp: parseInt(enq, 10),
         orderMs: parseInt(orderMs, 10),
         score: parseFloat(score),
         deadlineAt: parseInt(deadline, 10),
       };
     } catch (error) {
-      this.logger.error('Queue completeAndReserveNext error:', error);
+      this.logger.error(
+        'Queue completeAndReserveNextWithMetadata error:',
+        error,
+      );
       return null;
     }
   }

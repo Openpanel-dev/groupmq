@@ -812,80 +812,34 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   ): Promise<ReservedJob<T> | undefined> {
     if (this.atomicCompletion && fetchNextCallback?.()) {
       // Try atomic completion with next job reservation
-      try {
-        const nextJob = await this.q.completeAndReserveNext(
-          job.id,
-          job.groupId,
+      const nextJob = await this.q.completeAndReserveNextWithMetadata(
+        job.id,
+        job.groupId,
+        handlerResult,
+        {
+          processedOn: processedOn || Date.now(),
+          finishedOn: finishedOn || Date.now(),
+          attempts: job.attempts,
+          maxAttempts: job.maxAttempts,
+        },
+      );
+      if (nextJob) {
+        this.logger.debug(
+          `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
         );
-        if (nextJob) {
-          this.logger.debug(
-            `Got next job ${nextJob.id} from same group ${nextJob.groupId} atomically`,
-          );
-          return nextJob;
-        }
-      } catch (err) {
-        this.logger.warn(
-          `CompleteAndReserveNext failed, falling back to regular complete:`,
-          err,
-        );
-        // Fallback to regular completion (without metadata - will be added by recordCompletion)
-        await this.q.complete(job);
+        return nextJob;
       }
     } else {
-      // Use efficient combined completion if we have timing info
-      // Note: We'll still call recordCompletion separately for now to maintain compatibility
-      // TODO: In next major version, always use completeWithMetadata and remove recordCompletion call
-      await this.q.complete(job);
+      // Use completeWithMetadata for atomic completion with metadata
+      await this.q.completeWithMetadata(job, handlerResult, {
+        processedOn: processedOn || Date.now(),
+        finishedOn: finishedOn || Date.now(),
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+      });
     }
 
     return undefined;
-  }
-
-  /**
-   * Record job completion for inspection
-   *
-   * During graceful shutdown, we continue recording completions for jobs that finish
-   * within the timeout window. Only after the graceful timeout expires (closed=true)
-   * do we skip recording to avoid connection errors.
-   */
-  private async recordCompletion(
-    job: ReservedJob<T>,
-    handlerResult: unknown,
-    processedOn: number,
-    finishedOn: number,
-  ): Promise<void> {
-    // Only skip recording if worker is fully closed (after graceful timeout expired)
-    // During graceful shutdown (stopping=true, closed=false), we still record completions
-    if (this.closed) {
-      return;
-    }
-
-    try {
-      await this.q.recordCompleted(
-        { id: job.id, groupId: job.groupId },
-        handlerResult,
-        {
-          processedOn,
-          finishedOn,
-          attempts: job.attempts,
-          maxAttempts: job.maxAttempts,
-          data: job.data,
-        },
-      );
-    } catch (e) {
-      // Suppress connection errors during shutdown - they're expected when Redis is closed
-      const isConnectionError =
-        e instanceof Error && e.message.includes('Connection is closed');
-
-      // Only log if it's not a connection error during shutdown
-      if (!isConnectionError || !this.stopping) {
-        console.error(
-          `💥 CRITICAL: Failed to record completion for job ${job.id}:`,
-          e,
-        );
-        this.logger.warn('Failed to record completion', e);
-      }
-    }
   }
 
   /**
@@ -1530,14 +1484,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           returnvalue: handlerResult,
           status: 'completed',
         }),
-      );
-
-      // Record completion for inspection
-      await this.recordCompletion(
-        job,
-        handlerResult,
-        jobStartWallTime,
-        finishedAtWall,
       );
 
       // Return chained job if available and we have capacity

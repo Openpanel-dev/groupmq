@@ -9,7 +9,7 @@ export type ScriptName =
   | 'reserve-batch'
   | 'reserve-atomic'
   | 'complete'
-  | 'complete-and-reserve-next'
+  | 'complete-and-reserve-next-with-metadata'
   | 'complete-with-metadata'
   | 'retry'
   | 'heartbeat'
