@@ -732,7 +732,7 @@ export class Queue<T = any> {
     const data = opts.data === undefined ? null : opts.data;
     const serializedPayload = JSON.stringify(data);
 
-    const enqId = await evalScript<string>(this.r, 'enqueue', [
+    const result = await evalScript<string[] | string>(this.r, 'enqueue', [
       this.ns,
       opts.groupId,
       serializedPayload,
@@ -743,7 +743,43 @@ export class Queue<T = any> {
       String(this.keepCompleted),
       String(this._schedulerBufferMs),
     ]);
-    return this.getJob(enqId);
+
+    // Handle new array format that includes job data (avoids race condition)
+    // Format: [jobId, groupId, data, attempts, maxAttempts, timestamp, orderMs, delayUntil, status]
+    if (Array.isArray(result)) {
+      const [
+        returnedJobId,
+        returnedGroupId,
+        returnedData,
+        attempts,
+        returnedMaxAttempts,
+        timestamp,
+        returnedOrderMs,
+        returnedDelayUntil,
+        status,
+      ] = result;
+
+      return JobEntity.fromRawHash<T>(
+        this,
+        returnedJobId,
+        {
+          id: returnedJobId,
+          groupId: returnedGroupId,
+          data: returnedData,
+          attempts,
+          maxAttempts: returnedMaxAttempts,
+          timestamp,
+          orderMs: returnedOrderMs,
+          delayUntil: returnedDelayUntil,
+          status,
+        },
+        status as any,
+      );
+    }
+
+    // Fallback for old format (just jobId string) - this shouldn't happen with updated Lua script
+    // but kept for backwards compatibility during rollout
+    return this.getJob(result);
   }
 
   async reserve(): Promise<ReservedJob<T> | null> {
