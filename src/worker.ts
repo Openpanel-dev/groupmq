@@ -1467,15 +1467,19 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         clearInterval(hbTimer);
       }
 
+      // Capture finish time before completing the job
+      const finishedAtWall = Date.now();
+
       // Complete the job and optionally get next job from same group
       const nextJob = await this.completeJob(
         job,
         handlerResult,
         fetchNextCallback,
+        jobStartWallTime,
+        finishedAtWall,
       );
 
       // Emit completed event
-      const finishedAtWall = Date.now();
       this.emit(
         'completed',
         Job.fromReserved(this.q, job, {

@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "test": "pnpm build && pnpm start",
     "build": "cd ../ && pnpm build && cd example && tsdown index.ts && pnpm copy-lua",
     "copy-lua": "pnpm dlx copy-folder-util ../dist/lua dist/lua",
     "start": "node dist/index.mjs"

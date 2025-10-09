@@ -1,4 +1,4 @@
--- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, orderingDelayMs (scheduler buffer window)
+-- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, orderingDelayMs, clientTimestamp
 local ns = ARGV[1]
 local groupId = ARGV[2]
 local data = ARGV[3]
@@ -8,6 +8,7 @@ local delayUntil = tonumber(ARGV[6])
 local jobId = ARGV[7]
 local keepCompleted = tonumber(ARGV[8]) or 0
 local orderingDelayMs = tonumber(ARGV[9]) or 0
+local clientTimestamp = tonumber(ARGV[10])
 
 local readyKey = ns .. ":ready"
 local delayedKey = ns .. ":delayed"
@@ -84,9 +85,12 @@ local seqKey = ns .. ":seq:" .. daysSinceEpoch
 local seq = redis.call("INCR", seqKey)
 local score = relativeMs * 1000 + seq
 
--- Get accurate timestamp with milliseconds from Redis TIME
+-- Get Redis server time for buffering logic (to be consistent with server time)
 local timeResult = redis.call("TIME")
 local now = tonumber(timeResult[1]) * 1000 + math.floor(tonumber(timeResult[2]) / 1000)
+
+-- Use client timestamp for the job hash so timing calculations are accurate from client perspective
+local timestamp = clientTimestamp or now
 
 redis.call("HMSET", jobKey,
   "id", jobId,
@@ -95,7 +99,7 @@ redis.call("HMSET", jobKey,
   "attempts", "0",
   "maxAttempts", tostring(maxAttempts),
   "seq", tostring(seq),
-  "timestamp", tostring(now),
+  "timestamp", tostring(timestamp),
   "orderMs", tostring(orderMs),
   "score", tostring(score),
   "delayUntil", tostring(delayUntil)
@@ -156,6 +160,6 @@ end
 
 -- Return job data to avoid race condition where job might be processed & cleaned up
 -- before getJob() is called
-return {jobId, groupId, data, "0", tostring(maxAttempts), tostring(now), tostring(orderMs), tostring(delayUntil), jobStatus}
+return {jobId, groupId, data, "0", tostring(maxAttempts), tostring(timestamp), tostring(orderMs), tostring(delayUntil), jobStatus}
 
 

@@ -746,6 +746,7 @@ export class Queue<T = any> {
       String(jobId),
       String(this.keepCompleted),
       String(this._schedulerBufferMs),
+      String(now), // Pass client timestamp for accurate timing calculations
     ]);
 
     // Handle new array format that includes job data (avoids race condition)
