@@ -1,3 +1,10 @@
+## [1.0.0-next.19](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.18...v1.0.0-next.19) (2025-10-09)
+
+
+### Bug Fixes
+
+* correct process time (mainly for bullboard) ([68e229c](https://github.com/Openpanel-dev/groupmq/commit/68e229cfcd5a57166e8dc355e975c158553bbb25))
+
 ## [1.0.0-next.18](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0-next.17...v1.0.0-next.18) (2025-10-08)
 
 
