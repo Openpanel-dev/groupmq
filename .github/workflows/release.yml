@@ -6,8 +6,9 @@ on:
       - main
       - next
     paths-ignore:
-      - 'example/**'
-      - 'website/**'
+      - "example/**"
+      - "website/**"
+  workflow_dispatch:
 
 permissions:
   contents: write
