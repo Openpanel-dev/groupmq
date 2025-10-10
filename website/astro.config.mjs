@@ -68,6 +68,7 @@ export default defineConfig({
               label: 'Error Handling & Retries',
               slug: 'error-handling-retries',
             },
+            { label: 'Stalled Jobs', slug: 'stalled-jobs' },
             { label: 'Scaling Workers', slug: 'scaling-workers' },
             { label: 'Performance Tips', slug: 'performance-tips' },
           ],
