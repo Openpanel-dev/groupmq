@@ -62,37 +62,49 @@ for _, jobId in ipairs(processingJobs) do
       table.insert(results, 'failed')
     else
       -- Recover the job: move back to waiting
-      -- Remove from processing
-      redis.call('ZREM', processingKey, jobId)
+      -- CRITICAL: First verify job is STILL in processing to avoid race conditions
+      -- If job was completed between our snapshot and now, don't re-add it
+      local stillInProcessing = redis.call('ZSCORE', processingKey, jobId)
       
-      -- Release group lock if this job holds it
-      local lockKey = ns .. ':lock:' .. groupId
-      local lockedJobId = redis.call('GET', lockKey)
-      if lockedJobId == jobId then
-        redis.call('DEL', lockKey)
-      end
-      
-      -- Re-add to group's waiting queue (use orderMs as score)
-      local orderMs = redis.call('HGET', jobKey, 'orderMs')
-      if orderMs then
-        local groupKey = ns .. ':g:' .. groupId
-        redis.call('ZADD', groupKey, tonumber(orderMs), jobId)
+      if stillInProcessing then
+        -- Job is confirmed to still be in processing, safe to recover
+        redis.call('ZREM', processingKey, jobId)
         
-        -- Add group to ready queue
-        local readyKey = ns .. ':ready'
-        redis.call('ZADD', readyKey, tonumber(orderMs), groupId)
+        -- Release group lock if this job holds it
+        local lockKey = ns .. ':lock:' .. groupId
+        local lockedJobId = redis.call('GET', lockKey)
+        if lockedJobId == jobId then
+          redis.call('DEL', lockKey)
+        end
         
-        -- Ensure group is in groups set
-        redis.call('SADD', groupsKey, groupId)
+        -- Re-add to group's waiting queue using original score (not orderMs)
+        -- This preserves FIFO ordering with sequence numbers
+        local score = redis.call('HGET', jobKey, 'score')
+        if score then
+          local groupKey = ns .. ':g:' .. groupId
+          redis.call('ZADD', groupKey, tonumber(score), jobId)
+          
+          -- Add group to ready queue with the head job's score
+          local head = redis.call('ZRANGE', groupKey, 0, 0, 'WITHSCORES')
+          if head and #head >= 2 then
+            local headScore = tonumber(head[2])
+            local readyKey = ns .. ':ready'
+            redis.call('ZADD', readyKey, headScore, groupId)
+          end
+          
+          -- Ensure group is in groups set
+          redis.call('SADD', groupsKey, groupId)
+        end
+        
+        -- Update job status
+        redis.call('HSET', jobKey, 'status', 'waiting')
+        
+        -- Track that we recovered this job
+        table.insert(results, jobId)
+        table.insert(results, groupId)
+        table.insert(results, 'recovered')
       end
-      
-      -- Update job status
-      redis.call('HSET', jobKey, 'status', 'waiting')
-      
-      -- Track that we recovered this job
-      table.insert(results, jobId)
-      table.insert(results, groupId)
-      table.insert(results, 'recovered')
+      -- If not still in processing, it was completed - don't re-add it!
     end
   end
 end
