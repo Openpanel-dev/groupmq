@@ -26,7 +26,12 @@ describe('grouping', () => {
   });
 
   it('process jobs in correct order based on orderMs', async () => {
-    const q = new Queue({ redis, namespace, jobTimeoutMs: 5000 });
+    const q = new Queue({
+      redis,
+      namespace,
+      jobTimeoutMs: 5000,
+      orderingDelayMs: 200,
+    });
 
     const order: Array<string> = [];
     const worker = new Worker<{ n: number }>({

@@ -7,18 +7,7 @@ import { evalScript } from './lua/loader';
 import type { Status } from './status';
 
 /**
- * Strategy for handling out-of-order job arrivals.
- *
- * - `'none'`: No ordering guarantee beyond sorted set (fastest, zero overhead)
- * - `'scheduler'`: Redis-based buffering with scheduler promotion (high throughput, large windows)
- * - `'in-memory'`: Worker-side collection with grace period (low latency, small windows)
- */
-export type OrderingMethod = 'none' | 'scheduler' | 'in-memory';
-
-/**
- * Configuration options for a GroupMQ Queue
- *
- * @template T The type of data stored in jobs
+ * Options for configuring a GroupMQ queue
  */
 export type QueueOptions = {
   /**
@@ -78,11 +67,11 @@ export type QueueOptions = {
    * @example 5 // Retry failed jobs up to 5 times
    * @example 1 // Fail fast with minimal retries
    *
-   * **When to adjust:**
-   * - Critical jobs: Increase (5-10) for more resilience
-   * - Non-critical jobs: Decrease (1-2) to fail faster
+   * **When to override:**
+   * - Critical jobs: Increase retries
+   * - Non-critical jobs: Decrease retries
+   * - Idempotent operations: Can safely retry more
    * - External API calls: Consider API reliability
-   * - Rate-limited services: Use lower values to avoid rate limit issues
    */
   maxAttempts?: number;
 
@@ -103,266 +92,65 @@ export type QueueOptions = {
   reserveScanLimit?: number;
 
   /**
-   * Strategy for handling out-of-order job arrivals within a group.
+   * Ordering delay in milliseconds for timestamp-based ordering within groups.
    *
-   * @default 'none'
-   *
-   * ## Ordering Methods
-   *
-   * ### `'none'` - No Ordering Guarantees (Fastest)
-   *
-   * Jobs are processed immediately in their `orderMs` sequence as maintained by the sorted set.
-   * No additional ordering mechanism is applied.
-   *
-   * **Use when:**
-   * - Jobs always arrive in order
-   * - Order doesn't matter for your use case
-   * - Maximum throughput is priority
-   *
-   * **Characteristics:**
-   * - ✅ Zero overhead
-   * - ✅ Lowest possible latency
-   * - ✅ No scheduler required
-   * - ❌ No guarantee if jobs arrive out of order
-   *
-   * ---
-   *
-   * ### `'scheduler'` - Redis Buffering (High Throughput, Large Windows)
-   *
-   * Jobs are buffered in Redis for `orderingWindowMs` before being made available.
-   * A scheduler periodically promotes buffered groups when their window expires.
-   *
-   * **Use when:**
-   * - Jobs arrive 1-5 seconds out of order
-   * - Processing large batches with predictable timing
-   * - Need system-wide buffering (all workers see same buffer)
-   * - High job volume with ordering requirements
-   *
-   * **Characteristics:**
-   * - ✅ Handles large time windows (≥ 1000ms)
-   * - ✅ System-wide coordination via Redis
-   * - ✅ Good for predictable batch arrivals
-   * - ⚠️  Requires scheduler running
-   * - ⚠️  Adds latency equal to window size
-   * - ⚠️  Additional Redis keys for buffering
-   *
-   * **Requirements:**
-   * - `orderingWindowMs` must be ≥ 100ms (enforced)
-   * - Recommended: ≥ 1000ms for best performance
-   * - Worker with scheduler enabled
-   *
-   * **Example:**
-   * ```typescript
-   * const queue = new Queue({
-   *   redis,
-   *   namespace: 'batch-queue',
-   *   orderingMethod: 'scheduler',
-   *   orderingWindowMs: 2000, // 2-second buffer
-   * });
-   * ```
-   *
-   * ---
-   *
-   * ### `'in-memory'` - Worker Collection (Low Latency, Small Windows)
-   *
-   * Workers hold the first job and wait `orderingWindowMs` for additional jobs to arrive.
-   * Collects jobs in memory, sorts by `orderMs`, then processes as a batch.
-   *
-   * **Use when:**
-   * - Jobs arrive 5-500ms out of order (network jitter)
-   * - Need low overhead ordering
-   * - Can't afford scheduler-based delays
-   * - Want per-worker independent operation
+   * When provided (> 0), jobs within the same group will be processed in chronological order
+   * based on their `orderMs` timestamp. Jobs that are "too recent" relative to the
+   * last completed job will be delayed until enough time has passed.
    *
    * **How it works:**
-   * 1. Worker reserves first job, holds in memory
-   * 2. Waits `orderingWindowMs`, checking for more jobs
-   * 3. Timer resets each time a new job arrives (up to 3x max)
-   * 4. When no new jobs for full window, processes all in `orderMs` order
+   * - When reserving a job, check if it's been at least `orderingDelayMs` since the last job in the group
+   * - If not, defer the reservation and try again later
+   * - Ensures FIFO ordering within each group
    *
-   * **Characteristics:**
-   * - ✅ Zero scheduler overhead
-   * - ✅ No Redis buffering keys
-   * - ✅ Only waits when jobs actually arrive out of order
-   * - ✅ Scales perfectly (no coordination)
-   * - ⚠️  Adds latency equal to window for each batch
-   * - ⚠️  Workers hold jobs in memory
+   * **Use when:**
+   * - Events can arrive out of order due to network latency
+   * - You need strict temporal ordering within groups
+   * - Small delays (50-500ms) are acceptable
    *
-   * **Requirements:**
-   * - `orderingWindowMs` must be ≤ 1000ms (enforced)
-   * - Recommended: 50-500ms for best results
-   * - No scheduler required
+   * **Example:** `50` - 50ms grace period for network jitter
    *
-   * **Example:**
-   * ```typescript
-   * const queue = new Queue({
-   *   redis,
-   *   namespace: 'realtime-queue',
-   *   orderingMethod: 'in-memory',
-   *   orderingWindowMs: 200, // 200ms grace for network jitter
-   * });
-   * ```
-   *
-   * ---
-   *
-   * ## Choosing the Right Method
-   *
-   * | Scenario | Method | Window |
-   * |----------|--------|---------|
-   * | Jobs always in order | `'none'` | N/A |
-   * | Network jitter (5-100ms) | `'in-memory'` | 100-200ms |
-   * | Medium latency (100-1000ms) | `'in-memory'` | 200-500ms |
-   * | Large batches (1-5s) | `'scheduler'` | 1000-5000ms |
-   * | Distributed timestamps | `'scheduler'` | Based on clock skew |
-   *
-   * **Performance Comparison:**
-   * - `'none'`: ~50,000 jobs/sec, 0ms added latency
-   * - `'in-memory'`: ~45,000 jobs/sec, +50-500ms latency per batch
-   * - `'scheduler'`: ~40,000 jobs/sec, +1000-5000ms latency
+   * @default undefined // No ordering enforcement
    */
-  orderingMethod?: OrderingMethod;
+  orderingDelayMs?: number;
 
   /**
-   * Time window in milliseconds for the ordering method.
-   * Required when `orderingMethod` is not `'none'`.
+   * Maximum number of completed jobs to retain for inspection.
+   * Jobs beyond this limit are automatically cleaned up.
    *
-   * **For `orderingMethod: 'scheduler'`:**
-   * - Jobs buffered in Redis for this duration
-   * - Minimum: 100ms (enforced, values below are treated as 0)
-   * - Recommended: ≥ 1000ms
-   * - Example: `2000` (2-second buffer for batch arrivals)
-   *
-   * **For `orderingMethod: 'in-memory'`:**
-   * - Worker waits this long for additional jobs
-   * - Maximum: 1000ms (enforced, values above are capped)
-   * - Recommended: 50-500ms
-   * - Example: `200` (200ms grace for network jitter)
-   *
-   * **For `orderingMethod: 'none'`:**
-   * - This option is ignored
-   *
-   * @default 0
-   */
-  orderingWindowMs?: number;
-
-  /**
-   * Maximum wait time multiplier for the grace period when using `orderingMethod: 'in-memory'`.
-   *
-   * The grace period timer resets each time a new job arrives, but to prevent
-   * infinite waiting, it will never extend beyond `orderingWindowMs * orderingMaxWaitMultiplier`
-   * from when the first job was reserved.
-   *
-   * **Example:**
-   * - `orderingWindowMs: 100`, `orderingMaxWaitMultiplier: 3` → Max wait: 300ms total
-   * - `orderingWindowMs: 200`, `orderingMaxWaitMultiplier: 5` → Max wait: 1000ms total
-   *
-   * @default 3
-   * @example 2 // Stricter timeout (2x the ordering window)
-   * @example 5 // More lenient for high-latency scenarios
+   * @default 0 (no retention)
+   * @example 100 // Keep last 100 completed jobs
+   * @example 1000 // Keep last 1000 completed jobs for analysis
    *
    * **When to adjust:**
-   * - High network latency: Increase (4-10) to allow more time for delayed arrivals
-   * - Strict timing requirements: Decrease (2) for faster processing
-   * - Burst arrivals: Increase to handle continuous job streams
-   * - Low latency requirements: Decrease to minimize wait time
-   */
-  orderingMaxWaitMultiplier?: number;
-
-  /**
-   * Decay factor for the grace period when jobs keep arriving (used with `orderingMethod: 'in-memory'`).
-   *
-   * Each time a new job arrives and resets the grace period, the wait time is multiplied by this factor.
-   * This prevents excessive waiting when jobs arrive in continuous streams.
-   *
-   * **Example:**
-   * - `orderingWindowMs: 100`, `orderingGracePeriodDecay: 0.8`
-   *   - 1st wait: 100ms
-   *   - 2nd wait: 80ms (100 × 0.8)
-   *   - 3rd wait: 64ms (80 × 0.8)
-   *   - Continues until minimum (20ms) or max total wait reached
-   *
-   * **Special values:**
-   * - `1.0` (default): No decay, always wait full `orderingWindowMs`
-   * - `0.8`: Aggressive decay, 20% reduction each iteration
-   * - `0.9`: Moderate decay, 10% reduction each iteration
-   * - `0.95`: Gentle decay, 5% reduction each iteration
-   *
-   * @default 1.0 (no decay)
-   * @example 0.8 // Reduce wait by 20% each iteration
-   * @example 0.9 // Reduce wait by 10% each iteration
-   *
-   * **When to use:**
-   * - Continuous job streams: Use 0.8-0.9 to process faster
-   * - Burst arrivals: Use 0.9-0.95 to still collect most jobs
-   * - Unpredictable timing: Keep at 1.0 (no decay) for consistent behavior
-   */
-  orderingGracePeriodDecay?: number;
-
-  /**
-   * Maximum number of jobs to collect in a single batch when using `orderingMethod: 'in-memory'`.
-   *
-   * When the grace period expires, the worker collects all remaining jobs in the group up to this limit.
-   * This prevents memory issues and processing delays when many jobs have accumulated.
-   *
-   * @default 10
-   * @example 5 // Smaller batches for faster processing
-   * @example 20 // Larger batches for better throughput
-   * @example 50 // Very large batches for high-volume scenarios
-   *
-   * **When to adjust:**
-   * - High job volume: Increase (20-50) to process more jobs per batch
-   * - Memory constraints: Decrease (5-10) to reduce memory usage
-   * - Processing time: Smaller batches = more responsive, larger batches = better throughput
-   * - Large payloads: Decrease if individual jobs have large data payloads
-   */
-  orderingMaxBatchSize?: number;
-
-  /**
-   * Number of completed jobs to keep in Redis for inspection and debugging.
-   * Older completed jobs are automatically removed to prevent memory growth.
-   *
-   * @default 0 (don't keep completed jobs)
-   * @example 10 // Keep last 10 completed jobs
-   * @example 100 // Keep last 100 for debugging
-   *
-   * **When to adjust:**
-   * - Debugging: Increase (10-100) to inspect recent completions
-   * - Monitoring: Keep some for operational insights
-   * - Memory constraints: Keep low (0-10) to minimize Redis memory usage
-   * - Audit requirements: Increase based on compliance needs
+   * - Debugging: Increase to investigate issues
+   * - Memory constraints: Decrease to reduce Redis memory usage
+   * - Compliance: Increase for audit requirements
    */
   keepCompleted?: number;
 
   /**
-   * Number of failed jobs to keep in Redis for inspection and debugging.
-   * Older failed jobs are automatically removed to prevent memory growth.
+   * Maximum number of failed jobs to retain for inspection.
+   * Jobs beyond this limit are automatically cleaned up.
    *
-   * @default 0 (don't keep failed jobs)
-   * @example 50 // Keep last 50 failed jobs for analysis
-   * @example 200 // Keep more for debugging persistent failures
+   * @default 0 (no retention)
+   * @example 1000 // Keep last 1000 failed jobs for analysis
+   * @example 10000 // Keep more failed jobs for trend analysis
    *
    * **When to adjust:**
-   * - Error analysis: Increase (50-200) to analyze failure patterns
-   * - Debugging: Keep failed jobs to understand why they failed
-   * - Memory constraints: Keep low (0-20) to minimize Redis memory usage
-   * - Monitoring: Keep some for operational insights
+   * - Error analysis: Increase to investigate failure patterns
+   * - Memory constraints: Decrease to reduce Redis memory usage
+   * - Compliance: Increase for audit requirements
    */
   keepFailed?: number;
 
   /**
-   * Time-to-live in milliseconds for the scheduler lock.
-   * Prevents multiple workers from running scheduler operations simultaneously.
-   * Should be longer than your longest scheduler operation.
+   * TTL for scheduler lock in milliseconds.
+   * Prevents multiple schedulers from running simultaneously.
    *
-   * @default 1500 (1.5 seconds)
-   * @example 3000 // 3 seconds for complex cron jobs
-   * @example 5000 // 5 seconds for heavy delayed job processing
-   *
-   * **When to adjust:**
-   * - Complex cron jobs: Increase if scheduler operations take longer
-   * - Many delayed jobs: Increase if promotion takes significant time
-   * - Fast operations: Decrease (1000ms) for quicker lock release
-   * - Multiple workers: Ensure TTL is longer than operation time
+   * @default 1500
+   * @example 3000 // 3 seconds for slower environments
+   * @example 1000 // 1 second for faster environments
    */
   schedulerLockTtlMs?: number;
 };
@@ -554,39 +342,18 @@ export class Queue<T = any> {
   private scanLimit: number;
   private keepCompleted: number;
 
-  // Internal properties derived from orderingMethod + orderingWindowMs
-  private _schedulerBufferMs: number; // For 'scheduler' method
-  private _graceCollectionMs: number; // For 'in-memory' method
-  private _orderingMaxWaitMultiplier: number; // Max grace period multiplier
-  private _orderingGracePeriodDecay: number; // Grace period decay factor
-  private _orderingMaxBatchSize: number; // Max jobs to collect in a batch
+  // Internal ordering configuration
+  private _orderingDelayMs: number = 0;
   private keepFailed: number;
   private schedulerLockTtlMs: number;
   public name: string;
 
   // Internal tracking for adaptive behavior
-  private _lastJobTime = 0;
   private _consecutiveEmptyReserves = 0;
 
-  // Public getters for ordering configuration
-  public get schedulerBufferMs(): number {
-    return this._schedulerBufferMs;
-  }
-
-  public get graceCollectionMs(): number {
-    return this._graceCollectionMs;
-  }
-
-  public get orderingMaxWaitMultiplier(): number {
-    return this._orderingMaxWaitMultiplier;
-  }
-
-  public get orderingGracePeriodDecay(): number {
-    return this._orderingGracePeriodDecay;
-  }
-
-  public get orderingMaxBatchSize(): number {
-    return this._orderingMaxBatchSize;
+  // Public getter for ordering configuration
+  public get orderingDelayMs(): number {
+    return this._orderingDelayMs;
   }
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
@@ -612,77 +379,18 @@ export class Queue<T = any> {
         ? opts.logger
         : new Logger(!!opts.logger, this.namespace);
 
-    // Handle ordering configuration
-    const orderingMethod = opts.orderingMethod ?? 'none';
-    const orderingWindowMs = opts.orderingWindowMs ?? 0;
-
-    if (orderingMethod === 'scheduler') {
-      this._schedulerBufferMs = orderingWindowMs;
-      this._graceCollectionMs = 0;
-
-      // Enforce minimum 100ms for scheduler-based buffering
-      if (this._schedulerBufferMs > 0 && this._schedulerBufferMs < 100) {
-        this.logger.warn(
-          `orderingWindowMs ${this._schedulerBufferMs}ms is below minimum 100ms for scheduler method. Disabling ordering.`,
-        );
-        this._schedulerBufferMs = 0;
-      }
-
-      if (this._schedulerBufferMs > 0 && this._schedulerBufferMs < 1000) {
-        this.logger.warn(
-          `orderingWindowMs ${this._schedulerBufferMs}ms is below recommended 1000ms for scheduler method. Consider using 'in-memory' for smaller windows.`,
-        );
-      }
-    } else if (orderingMethod === 'in-memory') {
-      this._schedulerBufferMs = 0;
-      this._graceCollectionMs = orderingWindowMs;
-
-      // Enforce maximum 1000ms for in-memory collection
-      if (this._graceCollectionMs > 1000) {
-        this.logger.warn(
-          `orderingWindowMs ${this._graceCollectionMs}ms exceeds maximum 1000ms for in-memory method. Capping at 1000ms. Consider using 'scheduler' for larger windows.`,
-        );
-        this._graceCollectionMs = 1000;
-      }
-
-      if (this._graceCollectionMs > 0 && this._graceCollectionMs < 50) {
-        this.logger.warn(
-          `orderingWindowMs ${this._graceCollectionMs}ms is below recommended 50ms for in-memory method.`,
-        );
-      }
-    } else {
-      // 'none' or invalid
-      this._schedulerBufferMs = 0;
-      this._graceCollectionMs = 0;
-    }
-
-    // Initialize ordering max wait multiplier (default: 3x)
-    this._orderingMaxWaitMultiplier = Math.max(
-      1,
-      opts.orderingMaxWaitMultiplier ?? 3,
-    );
-
-    // Initialize ordering grace period decay (default: 1.0 = no decay)
-    // Clamp between 0.5 and 1.0 to prevent extreme values
-    const decayValue = opts.orderingGracePeriodDecay ?? 1.0;
-    this._orderingGracePeriodDecay = Math.max(0.5, Math.min(1.0, decayValue));
-
-    if (decayValue < 0.5 || decayValue > 1.0) {
-      this.logger.warn(
-        `orderingGracePeriodDecay ${decayValue} is outside valid range [0.5, 1.0]. Clamping to ${this._orderingGracePeriodDecay}.`,
-      );
-    }
-
-    // Initialize max batch size (default: 10)
-    // Clamp between 1 and 100 to prevent extreme values
-    this._orderingMaxBatchSize = Math.max(
-      1,
-      Math.min(100, opts.orderingMaxBatchSize ?? 10),
-    );
-
     this.r.on('error', (err) => {
       this.logger.error('Redis error (main):', err);
     });
+
+    // Handle ordering configuration - simple and clean
+    this._orderingDelayMs = Math.max(0, opts.orderingDelayMs ?? 0);
+
+    if (this._orderingDelayMs > 0) {
+      this.logger.info(
+        `GroupMQ: Enabled timestamp-based ordering with ${this._orderingDelayMs}ms delay`,
+      );
+    }
   }
 
   get redis(): Redis {
@@ -703,10 +411,6 @@ export class Queue<T = any> {
 
   get maxAttemptsDefault(): number {
     return this.defaultMaxAttempts;
-  }
-
-  get orderingWindowMs(): number {
-    return this._schedulerBufferMs || this._graceCollectionMs || 0;
   }
 
   async add(opts: AddOptions<T>): Promise<JobEntity<T>> {
@@ -745,7 +449,7 @@ export class Queue<T = any> {
       String(delayUntil),
       String(jobId),
       String(this.keepCompleted),
-      String(this._schedulerBufferMs),
+      String(this._orderingDelayMs),
       String(now), // Pass client timestamp for accurate timing calculations
     ]);
 
@@ -795,7 +499,7 @@ export class Queue<T = any> {
       String(now),
       String(this.vt),
       String(this.scanLimit),
-      String(this._schedulerBufferMs),
+      String(this._orderingDelayMs),
     ]);
 
     if (!raw) return null;
@@ -828,8 +532,6 @@ export class Queue<T = any> {
       score: Number(parts[8]),
       deadlineAt: Number.parseInt(parts[9], 10),
     } as ReservedJob<T>;
-
-    this._lastJobTime = Date.now();
 
     return job;
   }
@@ -927,7 +629,7 @@ export class Queue<T = any> {
           String(meta.maxAttempts),
           String(now),
           String(this.jobTimeoutMs),
-          String(this._schedulerBufferMs),
+          String(this._orderingDelayMs),
         ],
       );
 
@@ -1382,7 +1084,7 @@ export class Queue<T = any> {
     }
 
     // Factor in ordering delays for smarter blocking
-    if (this._schedulerBufferMs > 0) {
+    if (this._orderingDelayMs > 0) {
       const nextEligibleTime = this.calculateNextEligibleJobTime();
       if (nextEligibleTime > 0) {
         const delayUntilEligible = nextEligibleTime - Date.now();
@@ -1498,8 +1200,6 @@ export class Queue<T = any> {
         this.logger.debug(
           `Successful job reserve after blocking: ${job.id} from group ${job.groupId} (reserve took ${reserveDuration}ms)`,
         );
-        // Track job activity for adaptive timeout
-        this._lastJobTime = Date.now();
         // Reset consecutive empty reserves counter
         this._consecutiveEmptyReserves = 0;
       } else {
@@ -1556,7 +1256,7 @@ export class Queue<T = any> {
       String(now),
       String(this.vt),
       String(groupId),
-      String(this._schedulerBufferMs || 0),
+      String(this._orderingDelayMs || 0),
     ];
 
     // Add allowedJobId if provided (for grace collection)
@@ -1617,7 +1317,7 @@ export class Queue<T = any> {
         String(now),
         String(this.vt),
         String(Math.max(1, maxBatch)),
-        String(this._schedulerBufferMs || 0),
+        String(this._orderingDelayMs),
       ],
     );
     const out: Array<ReservedJob<T>> = [];
@@ -1638,7 +1338,6 @@ export class Queue<T = any> {
         deadlineAt: parseInt(parts[9], 10),
       } as ReservedJob<T>);
     }
-    if (out.length > 0) this._lastJobTime = Date.now();
     return out;
   }
 
@@ -2026,7 +1725,7 @@ export class Queue<T = any> {
    * This is a recovery mechanism for groups that were delayed but not re-added to ready queue.
    */
   async recoverDelayedGroups(): Promise<number> {
-    if (this._schedulerBufferMs <= 0) {
+    if (this._orderingDelayMs <= 0) {
       return 0;
     }
 
@@ -2034,7 +1733,7 @@ export class Queue<T = any> {
       const result = await evalScript<number>(
         this.r,
         'recover-delayed-groups',
-        [this.ns, String(Date.now()), String(this._schedulerBufferMs)],
+        [this.ns, String(Date.now()), String(this._orderingDelayMs)],
       );
       return result || 0;
     } catch (error) {
@@ -2104,7 +1803,7 @@ export class Queue<T = any> {
    * Only runs if buffer window >= 100ms (below that, buffering overhead isn't worth it).
    */
   async promoteBufferedGroups(now = Date.now()): Promise<number> {
-    if (this._schedulerBufferMs < 100) {
+    if (this._orderingDelayMs < 100) {
       return 0;
     }
 
@@ -2186,7 +1885,7 @@ export class Queue<T = any> {
           String(0),
           String(randomUUID()),
           String(this.keepCompleted),
-          String(this._schedulerBufferMs),
+          String(this._orderingDelayMs),
         ]);
 
         processed++;

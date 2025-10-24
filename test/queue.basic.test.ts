@@ -28,8 +28,7 @@ describe('basic per-group FIFO and parallelism', () => {
       redis,
       namespace,
       jobTimeoutMs: 5000,
-      orderingMethod: 'in-memory',
-      orderingWindowMs: 200, // 200ms grace period for network jitter
+      orderingDelayMs: 200, // 200ms grace period for network jitter
     });
 
     const seen: Array<string> = [];

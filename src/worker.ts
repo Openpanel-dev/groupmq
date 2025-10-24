@@ -352,10 +352,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private redisReadyHandler?: () => void;
   private runLoopPromise?: Promise<void>;
 
-  // Track when we started collecting for each group (for in-memory ordering)
-  // This ensures we wait the full grace period from when we FIRST picked up a job from the group
-  private groupCollectionStartTimes = new Map<string, number>();
-
   constructor(opts: WorkerOptions<T>) {
     super();
 
@@ -383,7 +379,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     // But only if scheduler buffering is meaningful (>= 100ms)
     const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
     const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
-    const schedulerBufferMs = this.q.schedulerBufferMs || 0;
+    const schedulerBufferMs = this.q.orderingDelayMs || 0;
     this.schedulerMs =
       opts.schedulerIntervalMs ??
       (schedulerBufferMs >= 100
@@ -405,6 +401,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+    this.run();
   }
 
   get isClosed() {
@@ -447,6 +444,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   async run(): Promise<void> {
+    if (this.runLoopPromise) {
+      return this.runLoopPromise;
+    }
+
     // Store the run loop promise so close() can wait for it
     const runPromise = this._runLoop();
     this.runLoopPromise = runPromise;
@@ -1219,184 +1220,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private async collectJobsWithGrace(
     firstJob: ReservedJob<T>,
   ): Promise<ReservedJob<T>[]> {
-    const initialGraceMs = this.q.graceCollectionMs;
-
-    if (initialGraceMs <= 0) {
-      return [firstJob];
-    }
-
-    const groupId = firstJob.groupId;
-    const collected: ReservedJob<T>[] = [firstJob];
-    const now = Date.now();
-
-    // CRITICAL: Extend job deadline to prevent timeout during grace collection
-    // Only extend if grace period is significant (> 5 seconds) to avoid overhead
-    const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
-    const jobTimeoutMs = this.q.jobTimeoutMs || 30000;
-    const shouldExtendDeadline = maxWaitMs > jobTimeoutMs * 0.5; // Only if we might timeout
-
-    if (shouldExtendDeadline) {
-      try {
-        await this.q.heartbeat(firstJob);
-      } catch (err) {
-        this.logger.warn(
-          `Failed to extend deadline during grace collection: ${err}`,
-        );
-      }
-    }
-
-    // Check if we're already in a collection window for this group
-    let collectionStartTime = this.groupCollectionStartTimes.get(groupId);
-
-    if (!collectionStartTime) {
-      // First job from this group - start tracking the collection window
-      collectionStartTime = now;
-      this.groupCollectionStartTimes.set(groupId, collectionStartTime);
-
-      this.logger.debug(
-        `Started collection window for group ${groupId} (${initialGraceMs}ms grace period)`,
-      );
-    } else {
-      // We're continuing an existing collection for this group
-      // Check if we've already waited long enough
-      const elapsedSinceStart = now - collectionStartTime;
-      if (elapsedSinceStart >= initialGraceMs) {
-        this.logger.debug(
-          `Collection window for group ${groupId} already expired (${elapsedSinceStart}ms elapsed), processing immediately`,
-        );
-        return [firstJob];
-      }
-
-      this.logger.debug(
-        `Continuing collection for group ${groupId} (${elapsedSinceStart}ms elapsed)`,
-      );
-    }
-
-    let lastSeenCount = 0;
-    let lastJobArrivalTime = now; // Reset every time we detect new jobs
-    let currentGraceMs = initialGraceMs; // Decaying grace window
-    const minGraceMs = 20; // Minimum wait time
-    const decayFactor = this.q.orderingGracePeriodDecay;
-
-    // ALWAYS wait the grace period when we first pick up a job
-    // This gives concurrent enqueue operations time to finish writing to Redis
-    // The goal is to collect ALL jobs that exist at the END of the grace period
-
-    // Keep checking for NEW jobs until grace period expires with no new arrivals
-    while (Date.now() - lastJobArrivalTime < currentGraceMs) {
-      await this.delay(10); // Check every 10ms
-
-      const currentCount = await this.q.getGroupJobCount(groupId);
-
-      if (currentCount > lastSeenCount) {
-        // New jobs arrived! Reset the grace period timer with decay
-        const newJobsCount = currentCount - lastSeenCount;
-        lastSeenCount = currentCount;
-        lastJobArrivalTime = Date.now(); // RESET timer to when we detected new jobs
-
-        // Apply decay: reduce the grace window for the next iteration
-        currentGraceMs = Math.max(minGraceMs, currentGraceMs * decayFactor);
-
-        this.logger.debug(
-          `${newJobsCount} new job(s) detected in group ${groupId}, resetting grace period to ${Math.round(currentGraceMs)}ms (${Math.round((currentGraceMs / initialGraceMs) * 100)}% of original)`,
-        );
-      }
-
-      // Safety: don't wait forever (max multiplier from queue config)
-      const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
-      const totalWaitTime = Date.now() - collectionStartTime;
-      if (totalWaitTime > maxWaitMs) {
-        this.logger.warn(
-          `Grace period exceeded ${this.q.orderingMaxWaitMultiplier}x limit (${maxWaitMs}ms) for group ${groupId} (waited ${totalWaitTime}ms), proceeding`,
-        );
-        break;
-      }
-    }
-
-    // Collect ALL remaining jobs in the group (up to configured batch limit)
-    // These are the jobs that were there when the grace period ended
-    const finalCount = await this.q.getGroupJobCount(groupId);
-    const maxBatchSize = this.q.orderingMaxBatchSize;
-    const jobsToCollect = Math.min(finalCount, maxBatchSize);
-
-    this.logger.debug(
-      `Grace period complete for group ${groupId}, collecting ${jobsToCollect} of ${finalCount} remaining jobs (max batch: ${maxBatchSize})`,
-    );
-
-    // Collect remaining jobs from the group (up to max batch size)
-    for (let i = 0; i < jobsToCollect; i++) {
-      try {
-        // Reserve next job from this group, passing first job's ID to bypass lock
-        const nextJob = await this.reserveNextFromSameGroup(
-          groupId,
-          firstJob.id,
-        );
-        if (!nextJob) break;
-
-        collected.push(nextJob);
-
-        // CRITICAL: Extend deadline for each collected job to prevent timeout
-        // Only if we're in a long grace collection scenario
-        if (shouldExtendDeadline) {
-          try {
-            await this.q.heartbeat(nextJob);
-          } catch (err) {
-            this.logger.warn(
-              `Failed to extend deadline for collected job ${nextJob.id}: ${err}`,
-            );
-          }
-        }
-      } catch (err) {
-        this.logger.error(`Error collecting additional job: ${err}`);
-        break;
-      }
-    }
-
-    const oldCollected = collected.slice();
-
-    // Sort all collected jobs by orderMs
-    // Handle NaN values by treating them as 0 (or using timestamp as fallback)
-    collected.sort((a, b) => {
-      const aOrder = Number.isNaN(a.orderMs) ? a.timestamp : a.orderMs;
-      const bOrder = Number.isNaN(b.orderMs) ? b.timestamp : b.orderMs;
-      return aOrder - bOrder;
-    });
-
-    if (collected.length > 1) {
-      this.logger.info(
-        `Collected ${collected.length} jobs from group ${groupId} during ${Date.now() - now}ms grace period`,
-        {
-          unsorted: oldCollected.map((job) => job.id),
-          sorted: collected.map((job, index) => ({
-            jobId: job.id,
-            order: index,
-            groupId: job.groupId,
-            orderMs: job.orderMs,
-            timestamp: job.timestamp,
-          })),
-        },
-      );
-    }
-
-    // Clear the tracking for this group after we've collected the batch
-    // This allows the next batch to start fresh
-    this.groupCollectionStartTimes.delete(groupId);
-
-    return collected;
-  }
-
-  /**
-   * Reserve next job from same group (helper for grace collection)
-   *
-   * Passes the initial job ID to bypass the lock check, allowing us to
-   * reserve multiple jobs from the same group during grace collection.
-   */
-  private async reserveNextFromSameGroup(
-    groupId: string,
-    allowedJobId: string,
-  ): Promise<ReservedJob<T> | null> {
-    // Pass the initial job ID - if the lock matches, we can reserve
-    return await this.q.reserveAtomic(groupId, allowedJobId);
+    // ZSET-based ordering: Jobs are already sorted by orderMs in Redis
+    // Just return the single job - Redis ensures correct ordering
+    return [firstJob];
   }
 
   private async processOne(
@@ -1679,8 +1505,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 // Export a value with a generic constructor so T is inferred from opts.queue
 export type Worker<T = any> = _Worker<T>;
 type WorkerConstructor = new <T>(opts: WorkerOptions<T>) => _Worker<T>;
-export const Worker: WorkerConstructor =
-  _Worker as unknown as WorkerConstructor;
+export const Worker = _Worker as unknown as WorkerConstructor;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
