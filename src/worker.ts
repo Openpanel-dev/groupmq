@@ -393,7 +393,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           )
         : defaultSchedulerMs);
 
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s for high-concurrency production
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 1; // 1s default for responsive job pickup (adaptive logic can go lower)
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
@@ -636,15 +636,19 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             }
 
             // Exponential backoff when no jobs are available to prevent tight polling
-            // Start backoff after just 3 consecutive empty reserves (more aggressive than before)
-            if (this.blockingStats.consecutiveEmptyReserves > 3) {
-              // More aggressive backoff for high-concurrency: start at 100ms, grow faster, cap at 5000ms
+            // For high concurrency (1000+), be more lenient to avoid false backoff when jobs exist
+            const backoffThreshold = this.concurrency >= 100 ? 10 : 3;
+            if (
+              this.blockingStats.consecutiveEmptyReserves > backoffThreshold
+            ) {
+              // Adaptive backoff based on concurrency level
+              const maxBackoff = this.concurrency >= 100 ? 1000 : 5000; // Lower cap for high concurrency
               if (this.emptyReserveBackoffMs === 0) {
-                this.emptyReserveBackoffMs = 100; // Start at 100ms for high concurrency
+                this.emptyReserveBackoffMs = 50; // Start lower for faster recovery
               } else {
                 this.emptyReserveBackoffMs = Math.min(
-                  5000, // Cap at 5 seconds for high concurrency
-                  Math.max(100, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
+                  maxBackoff,
+                  Math.max(50, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
                 );
               }
 
@@ -1225,6 +1229,22 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     const collected: ReservedJob<T>[] = [firstJob];
     const now = Date.now();
 
+    // CRITICAL: Extend job deadline to prevent timeout during grace collection
+    // Only extend if grace period is significant (> 5 seconds) to avoid overhead
+    const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
+    const jobTimeoutMs = this.q.jobTimeoutMs || 30000;
+    const shouldExtendDeadline = maxWaitMs > jobTimeoutMs * 0.5; // Only if we might timeout
+
+    if (shouldExtendDeadline) {
+      try {
+        await this.q.heartbeat(firstJob);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to extend deadline during grace collection: ${err}`,
+        );
+      }
+    }
+
     // Check if we're already in a collection window for this group
     let collectionStartTime = this.groupCollectionStartTimes.get(groupId);
 
@@ -1314,8 +1334,20 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         if (!nextJob) break;
 
         collected.push(nextJob);
+
+        // CRITICAL: Extend deadline for each collected job to prevent timeout
+        // Only if we're in a long grace collection scenario
+        if (shouldExtendDeadline) {
+          try {
+            await this.q.heartbeat(nextJob);
+          } catch (err) {
+            this.logger.warn(
+              `Failed to extend deadline for collected job ${nextJob.id}: ${err}`,
+            );
+          }
+        }
       } catch (err) {
-        this.logger.warn(`Error collecting additional job: ${err}`);
+        this.logger.error(`Error collecting additional job: ${err}`);
         break;
       }
     }
