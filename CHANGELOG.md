@@ -1,3 +1,10 @@
+## [1.0.1-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.2...v1.0.1-next.3) (2025-10-24)
+
+
+### Bug Fixes
+
+* potential issue with re-running jobs 3 ([6bf2d08](https://github.com/Openpanel-dev/groupmq/commit/6bf2d08d294c2ee8c7edacd5b61f16d730915337))
+
 ## [1.0.1-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.1...v1.0.1-next.2) (2025-10-24)
 
 
