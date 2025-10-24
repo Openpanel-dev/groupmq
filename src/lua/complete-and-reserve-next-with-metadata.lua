@@ -21,6 +21,10 @@ local orderingDelayMs = tonumber(ARGV[15]) or 0
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
 redis.call("ZREM", ns .. ":processing", completedJobId)
 
+-- Decrement active counter
+local activeCountKey = ns .. ":count:active"
+redis.call("DECR", activeCountKey)
+
 -- Part 2: Record job metadata (completed or failed)
 local jobKey = ns .. ":job:" .. completedJobId
 
@@ -136,6 +140,9 @@ redis.call("HSET", procKey, "groupId", groupId, "deadlineAt", tostring(deadline)
 
 local processingKey = ns .. ":processing"
 redis.call("ZADD", processingKey, deadline, id)
+
+-- Increment active counter for new job (completed job was already decremented above)
+redis.call("INCR", activeCountKey)
 
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then

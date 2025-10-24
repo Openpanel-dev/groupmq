@@ -37,6 +37,10 @@ for _, jobId in ipairs(processingJobs) do
       -- Remove from processing
       redis.call('ZREM', processingKey, jobId)
       
+      -- Decrement active counter (job is being failed)
+      local activeCountKey = ns .. ':count:active'
+      redis.call('DECR', activeCountKey)
+      
       -- Remove from group if it's there
       local groupKey = ns .. ':g:' .. groupId
       redis.call('ZREM', groupKey, jobId)
@@ -69,6 +73,12 @@ for _, jobId in ipairs(processingJobs) do
       if stillInProcessing then
         -- Job is confirmed to still be in processing, safe to recover
         redis.call('ZREM', processingKey, jobId)
+        
+        -- Update counters: active -> waiting
+        local activeCountKey = ns .. ':count:active'
+        local waitingCountKey = ns .. ':count:waiting'
+        redis.call('DECR', activeCountKey)
+        redis.call('INCR', waitingCountKey)
         
         -- Release group lock if this job holds it
         local lockKey = ns .. ':lock:' .. groupId

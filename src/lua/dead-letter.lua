@@ -12,6 +12,10 @@ redis.call("ZREM", gZ, jobId)
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
+-- Decrement active counter (job is being dead-lettered, not re-queued)
+local activeCountKey = ns .. ":count:active"
+redis.call("DECR", activeCountKey)
+
 -- Remove idempotence mapping to allow reuse
 redis.call("DEL", ns .. ":unique:" .. jobId)
 

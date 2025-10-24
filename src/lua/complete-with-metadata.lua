@@ -18,6 +18,10 @@ local maxAttempts = ARGV[12]
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
+-- Decrement active counter
+local activeCountKey = ns .. ":count:active"
+redis.call("DECR", activeCountKey)
+
 local lockKey = ns .. ":lock:" .. gid
 local val = redis.call("GET", lockKey)
 local hadLock = (val == jobId)
