@@ -1,3 +1,10 @@
+## [1.0.1-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.3...v1.0.1-next.4) (2025-10-24)
+
+
+### Bug Fixes
+
+* revert in memory ordering ([0a9f178](https://github.com/Openpanel-dev/groupmq/commit/0a9f17876444eda7bb79453e6994f62f0b1186ec))
+
 ## [1.0.1-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.2...v1.0.1-next.3) (2025-10-24)
 
 
