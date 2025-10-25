@@ -1,3 +1,11 @@
+## [1.0.1-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.5...v1.0.1-next.6) (2025-10-25)
+
+
+### Bug Fixes
+
+* test ([29ab6ca](https://github.com/Openpanel-dev/groupmq/commit/29ab6ca9e1801570f59383a23333a56b1032e09f))
+* validate lua before build ([64a7cf9](https://github.com/Openpanel-dev/groupmq/commit/64a7cf99d97017a00a76c180555de34c550f796e))
+
 ## [1.0.1-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.4...v1.0.1-next.5) (2025-10-25)
 
 
