@@ -62,7 +62,6 @@ for i = 1, #groups, 2 do
         table.insert(out, id .. "||DELIMITER||" .. groupId .. "||DELIMITER||" .. payload .. "||DELIMITER||" .. attempts .. "||DELIMITER||" .. maxAttempts .. "||DELIMITER||" .. seq .. "||DELIMITER||" .. enq .. "||DELIMITER||" .. orderMs .. "||DELIMITER||" .. score .. "||DELIMITER||" .. deadline)
         table.insert(processedGroups, gid)
       end
-      end
     end
   end
   -- Note: Locked groups remain in ready queue from original ZRANGE
