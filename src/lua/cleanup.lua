@@ -32,11 +32,7 @@ for _, jobId in ipairs(expiredJobs) do
         redis.call("DEL", procKey)
         redis.call("ZREM", processingKey, jobId)
         
-        -- Update counters: active -> waiting (job recovered from stalled state)
-        local activeCountKey = ns .. ":count:active"
-        local waitingCountKey = ns .. ":count:waiting"
-        redis.call("DECR", activeCountKey)
-        redis.call("INCR", waitingCountKey)
+        -- No counter operations - use ZCARD for counts
         
         cleaned = cleaned + 1
       end

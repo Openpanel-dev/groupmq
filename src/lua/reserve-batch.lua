@@ -26,16 +26,16 @@ for i = 1, #groups, 2 do
   local gZ = ns .. ":g:" .. gid
   local lockKey = ns .. ":lock:" .. gid
 
-  -- Skip locked groups
-  local lockTtl = redis.call("PTTL", lockKey)
-  if lockTtl == -2 or lockTtl == -1 then
-    -- Get head job (oldest) to check if eligible
-    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-    if head and #head >= 2 then
-      local headJobId = head[1]
-      local headScore = tonumber(head[2])
-      
-      -- Process the head job
+  -- Try to atomically acquire the group lock
+  local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if head and #head >= 2 then
+    local headJobId = head[1]
+    local headScore = tonumber(head[2])
+    
+    -- Try to atomically acquire the lock using the job ID as the lock value
+    local lockAcquired = redis.call("SET", lockKey, headJobId, "PX", vt, "NX")
+    if lockAcquired then
+      -- Successfully acquired lock, now get the job
       local zpop = redis.call("ZPOPMIN", gZ, 1)
       if zpop and #zpop > 0 then
         local jobId = zpop[1]
@@ -44,17 +44,12 @@ for i = 1, #groups, 2 do
         local job = redis.call("HMGET", jobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
         local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
-        -- Lock group to this job
-        redis.call("SET", lockKey, id, "PX", vt)
-
         local procKey = ns .. ":processing:" .. id
         local deadline = now + vt
         redis.call("HSET", procKey, "groupId", gid, "deadlineAt", tostring(deadline))
         redis.call("ZADD", processingKey, deadline, id)
 
-        -- Increment active counter
-        local activeCountKey = ns .. ":count:active"
-        redis.call("INCR", activeCountKey)
+        -- No counter operations - use ZCARD for counts
 
         -- Re-add group if there is a new head job (next oldest)
         local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
@@ -65,11 +60,13 @@ for i = 1, #groups, 2 do
 
         table.insert(out, id .. "||DELIMITER||" .. groupId .. "||DELIMITER||" .. payload .. "||DELIMITER||" .. attempts .. "||DELIMITER||" .. maxAttempts .. "||DELIMITER||" .. seq .. "||DELIMITER||" .. enq .. "||DELIMITER||" .. orderMs .. "||DELIMITER||" .. score .. "||DELIMITER||" .. deadline)
         table.insert(processedGroups, gid)
+      else
+        -- No job available, release the lock
+        redis.call("DEL", lockKey)
       end
     end
   end
-  -- Note: Locked groups remain in ready queue from original ZRANGE
-  -- They'll be skipped by next reserve attempt
+  -- Note: Groups that couldn't be locked will be skipped by next reserve attempt
 end
 
 -- Remove only the groups that were actually processed from ready queue

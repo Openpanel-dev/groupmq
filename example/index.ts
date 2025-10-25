@@ -20,49 +20,30 @@ const run = async () => {
     jobShouldTakeThisLongMs: number;
     groupId: string;
   }>({
+    logger: true,
     redis: redis,
     namespace: 'example',
-    keepCompleted: 100,
+    keepCompleted: 100000,
     keepFailed: 100,
   });
 
-  const cronQueue = new Queue<{
-    id: string;
-    jobShouldTakeThisLongMs: number;
-    groupId: string;
-  }>({
-    redis: redis,
-    namespace: 'cron',
-    keepCompleted: 100,
-    keepFailed: 100,
-  });
+  const CONCURRENCY = 4;
+  const WORKERS = 4;
 
-  const worker = new Worker({
-    concurrency: 2,
-    queue: queue,
-    async handler(job) {
-      await sleep(job.data.jobShouldTakeThisLongMs);
-      if (Math.random() > 0.9) {
-        throw new Error('test error');
-      }
-      return `basic worker completed job ${job.id}`;
-    },
-  });
+  const createWorker = (index: number, concurrency: number) => {
+    return new Worker({
+      concurrency: concurrency,
+      queue: queue,
+      async handler(job) {
+        console.log(`processing job worker ${index}`, job.id);
+        await sleep(job.data.jobShouldTakeThisLongMs);
+      },
+    });
+  };
 
-  const cronWorker = new Worker({
-    queue: cronQueue,
-    // Run cleanup/scheduler frequently so repeating jobs trigger on time
-    cleanupIntervalMs: 1000,
-    async handler(job) {
-      await sleep(job.data.jobShouldTakeThisLongMs);
-      if (Math.random() > 0.9) {
-        throw new Error('test error');
-      }
-      return `cron worker completed job ${job.id}`;
-    },
-  });
-
-  const workers = [worker, cronWorker];
+  const workers = Array.from({ length: WORKERS }, (_, i) =>
+    createWorker(i, CONCURRENCY),
+  );
 
   workers.forEach((worker) => {
     worker.on('completed', (job) => {
@@ -106,10 +87,7 @@ const run = async () => {
   const serverAdapter = new HonoAdapter(serveStatic);
 
   createBullBoard({
-    queues: [
-      new BullBoardGroupMQAdapter(queue),
-      new BullBoardGroupMQAdapter(cronQueue),
-    ],
+    queues: [new BullBoardGroupMQAdapter(queue)],
     serverAdapter,
   });
 
@@ -117,47 +95,35 @@ const run = async () => {
   serverAdapter.setBasePath(basePath);
   app.route(basePath, serverAdapter.registerPlugin());
 
-  // Add a cron job that runs every 5 seconds
-  await cronQueue.removeRepeatingJob('groupId', { every: 5000 });
-  await cronQueue.add({
-    data: {
-      id: Math.random().toString(36).substring(2, 15),
-      jobShouldTakeThisLongMs: Math.random() * 1000,
-      groupId: 'groupId',
-    },
-    groupId: 'groupId',
-    repeat: { every: 5000 }, // every 5 seconds
-  });
-
   // Add basic job every 2.5 seconds
   const groups = [
     ...new Array(25).fill(null).map((_, i) => `groupId_${i + 1}`),
   ];
-  setInterval(async () => {
-    const groupId = groups[Math.floor(Math.random() * groups.length)]!;
-    await queue.add({
-      data: {
-        id: Math.random().toString(36).substring(2, 15),
-        jobShouldTakeThisLongMs: Math.random() * 1000,
-        groupId,
-      },
-      groupId,
-    });
-  }, 1_000);
+  // setInterval(async () => {
+  //   const groupId = groups[Math.floor(Math.random() * groups.length)]!;
+  //   await queue.add({
+  //     data: {
+  //       id: Math.random().toString(36).substring(2, 15),
+  //       jobShouldTakeThisLongMs: Math.random() * 1000,
+  //       groupId,
+  //     },
+  //     groupId,
+  //   });
+  // }, 1_000);
 
   app.get('/add', async (c) => {
     const groups = [
-      ...new Array(25).fill(null).map((_, i) => `groupId_${i + 1}`),
+      ...new Array(1000).fill(null).map((_, i) => `groupId_${i + 1}`),
     ];
     const events = [
-      ...new Array(50).fill(null).map((_, i) => `event_${i + 1}`),
+      ...new Array(200).fill(null).map((_, i) => `event_${i + 1}`),
     ];
     for (const event of events) {
       const groupId = groups[Math.floor(Math.random() * groups.length)]!;
       await queue.add({
         data: {
           id: event,
-          jobShouldTakeThisLongMs: Math.random() * 500 + 500,
+          jobShouldTakeThisLongMs: Math.random() * 40 + 20,
           groupId,
         },
         groupId,
@@ -165,6 +131,20 @@ const run = async () => {
     }
 
     return c.json({ message: `${events.length} jobs added` });
+  });
+
+  app.get('/add-single', async (c) => {
+    const groupId = `groupId_${Math.floor(Math.random() * 100) + 1}`;
+    const event = `event_${Math.floor(Math.random() * 200) + 1}`;
+    await queue.add({
+      data: {
+        id: event,
+        jobShouldTakeThisLongMs: Math.random() * 40 + 20,
+        groupId,
+      },
+      groupId,
+    });
+    return c.json({ message: 'job added' });
   });
 
   showRoutes(app);

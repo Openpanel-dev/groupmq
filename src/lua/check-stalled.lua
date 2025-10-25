@@ -14,12 +14,18 @@ local circuitBreakerKey = ns .. ":stalled:circuit"
 local lastCheck = redis.call("GET", circuitBreakerKey)
 if lastCheck then
   local lastCheckTime = tonumber(lastCheck)
-  if lastCheckTime and (now - lastCheckTime) < 1000 then
-    -- Circuit breaker: only check stalled jobs once per second
+  -- More aggressive circuit breaker for high concurrency: 2 seconds instead of 1
+  local circuitBreakerInterval = 2000
+  if lastCheckTime and (now - lastCheckTime) < circuitBreakerInterval then
+    -- Circuit breaker: only check stalled jobs once per 2 seconds
     return {}
   end
 end
-redis.call("SET", circuitBreakerKey, now, "PX", 2000)
+redis.call("SET", circuitBreakerKey, now, "PX", 3000)
+
+local processingKey = ns .. ':processing'
+local groupsKey = ns .. ':groups'
+local stalledKey = ns .. ':stalled'
 
 -- BullMQ-inspired: Two-phase stalled detection for better accuracy
 -- Phase 1: Get potentially stalled jobs (jobs past their deadline)
@@ -27,10 +33,6 @@ local potentiallyStalled = redis.call("ZRANGEBYSCORE", processingKey, 0, now - g
 if not potentiallyStalled or #potentiallyStalled == 0 then
   return {}
 end
-
-local processingKey = ns .. ':processing'
-local groupsKey = ns .. ':groups'
-local stalledKey = ns .. ':stalled'
 
 local results = {}
 
@@ -57,9 +59,7 @@ for _, jobId in ipairs(processingJobs) do
       -- Remove from processing
       redis.call('ZREM', processingKey, jobId)
       
-      -- Decrement active counter (job is being failed)
-      local activeCountKey = ns .. ':count:active'
-      redis.call('DECR', activeCountKey)
+      -- No counter operations - use ZCARD for counts
       
       -- Remove from group if it's there
       local groupKey = ns .. ':g:' .. groupId
@@ -109,11 +109,7 @@ for _, jobId in ipairs(processingJobs) do
         -- Job is confirmed to still be in processing, safe to recover
         redis.call('ZREM', processingKey, jobId)
         
-        -- Update counters: active -> waiting
-        local activeCountKey = ns .. ':count:active'
-        local waitingCountKey = ns .. ':count:waiting'
-        redis.call('DECR', activeCountKey)
-        redis.call('INCR', waitingCountKey)
+        -- No counter operations - use ZCARD for counts
         
         -- Release group lock if this job holds it
         local lockKey = ns .. ':lock:' .. groupId

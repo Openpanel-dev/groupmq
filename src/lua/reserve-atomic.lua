@@ -91,9 +91,7 @@ redis.call("HSET", procKey, "groupId", groupId, "deadlineAt", tostring(deadline)
 local processingKey = ns .. ":processing"
 redis.call("ZADD", processingKey, deadline, id)
 
--- Increment active counter
-local activeCountKey = ns .. ":count:active"
-redis.call("INCR", activeCountKey)
+-- No counter operations - use ZCARD for counts
 
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then

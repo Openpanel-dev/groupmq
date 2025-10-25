@@ -1032,7 +1032,7 @@ export class Queue<T = any> {
    */
   private getBlockTimeout(maxTimeout: number, blockUntil?: number): number {
     const minimumBlockTimeout = 0.001; // 1ms like BullMQ for fast job pickup
-    const maximumBlockTimeout = 10; // 10s max like BullMQ
+    const maximumBlockTimeout = 1; // 1s max for high responsiveness
 
     // Handle delayed jobs case (when we know exactly when next job should be processed)
     if (blockUntil) {
@@ -1090,6 +1090,8 @@ export class Queue<T = any> {
       this.logger.debug(
         `Immediate reserve successful (${Date.now() - startTime}ms)`,
       );
+      // Reset consecutive empty reserves counter when we get a job via fast path
+      this._consecutiveEmptyReserves = 0;
       return immediateJob;
     }
 

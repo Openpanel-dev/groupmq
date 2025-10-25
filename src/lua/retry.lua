@@ -11,11 +11,7 @@ local maxAttempts = tonumber(redis.call("HGET", jobKey, "maxAttempts"))
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
--- Update counters: active -> waiting
-local activeCountKey = ns .. ":count:active"
-local waitingCountKey = ns .. ":count:waiting"
-redis.call("DECR", activeCountKey)
-redis.call("INCR", waitingCountKey)
+-- No counter operations - use ZCARD for counts
 
 if attempts > maxAttempts then
   return -1

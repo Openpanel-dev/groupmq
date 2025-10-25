@@ -52,36 +52,48 @@ end
 
 local chosenGid = nil
 local chosenIndex = nil
+local headJobId = nil
+local job = nil
+
+-- Try to atomically acquire a group and its head job
 for i = 1, #groups, 2 do
   local gid = groups[i]
   local lockKey = ns .. ":lock:" .. gid
-  local lockTtl = redis.call("PTTL", lockKey)
-  if lockTtl == -2 or lockTtl == -1 then
-    chosenGid = gid
-    chosenIndex = (i + 1) / 2 - 1
-    break
+  local gZ = ns .. ":g:" .. gid
+  
+  -- Check if group has jobs and try to atomically acquire lock
+  local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if head and #head >= 2 then
+    local tempJobId = head[1]
+    local tempJobKey = ns .. ":job:" .. tempJobId
+    
+    -- Try to atomically acquire the lock using the job ID as the lock value
+    local lockAcquired = redis.call("SET", lockKey, tempJobId, "PX", vt, "NX")
+    if lockAcquired then
+      -- Successfully acquired lock, now get the job
+      local zpop = redis.call("ZPOPMIN", gZ, 1)
+      if zpop and #zpop > 0 then
+        headJobId = zpop[1]
+        job = redis.call("HMGET", tempJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
+        chosenGid = gid
+        chosenIndex = (i + 1) / 2 - 1
+        break
+      else
+        -- No job available, release the lock
+        redis.call("DEL", lockKey)
+      end
+    end
   end
 end
 
-if not chosenGid then
+if not chosenGid or not job then
   return nil
 end
 
-redis.call("ZREMRANGEBYRANK", readyKey, chosenIndex, chosenIndex)
-
-local gZ = ns .. ":g:" .. chosenGid
-local zpop = redis.call("ZPOPMIN", gZ, 1)
-if not zpop or #zpop == 0 then
-  return nil
-end
-local headJobId = zpop[1]
-
-local jobKey = ns .. ":job:" .. headJobId
-local job = redis.call("HMGET", jobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
-local lockKey = ns .. ":lock:" .. chosenGid
-redis.call("SET", lockKey, id, "PX", vt)
+-- Remove the group from ready queue
+redis.call("ZREMRANGEBYRANK", readyKey, chosenIndex, chosenIndex)
 
 local procKey = ns .. ":processing:" .. id
 local deadline = now + vt
@@ -90,10 +102,9 @@ redis.call("HSET", procKey, "groupId", chosenGid, "deadlineAt", tostring(deadlin
 local processingKey2 = ns .. ":processing"
 redis.call("ZADD", processingKey2, deadline, id)
 
--- Increment active counter
-local activeCountKey = ns .. ":count:active"
-redis.call("INCR", activeCountKey)
+-- No counter operations - use ZCARD for counts
 
+local gZ = ns .. ":g:" .. chosenGid
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then
   local nextScore = tonumber(nextHead[2])
