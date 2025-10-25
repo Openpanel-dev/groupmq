@@ -38,5 +38,3 @@ if backoffMs > 0 then
 end
 
 return attempts
-
-
