@@ -639,6 +639,14 @@ export class Queue<T = any> {
     }
   }
 
+  /**
+   * Check if a job is currently in processing state
+   */
+  async isJobProcessing(jobId: string): Promise<boolean> {
+    const score = await this.r.zscore(`${this.ns}:processing`, jobId);
+    return score !== null;
+  }
+
   async retry(jobId: string, backoffMs = 0) {
     return evalScript<number>(this.r, 'retry', [
       this.ns,

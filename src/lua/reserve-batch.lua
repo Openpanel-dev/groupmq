@@ -52,6 +52,10 @@ for i = 1, #groups, 2 do
         redis.call("HSET", procKey, "groupId", gid, "deadlineAt", tostring(deadline))
         redis.call("ZADD", processingKey, deadline, id)
 
+        -- Increment active counter
+        local activeCountKey = ns .. ":count:active"
+        redis.call("INCR", activeCountKey)
+
         -- Re-add group if there is a new head job (next oldest)
         local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
         if nextHead and #nextHead >= 2 then

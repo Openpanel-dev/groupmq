@@ -90,6 +90,10 @@ redis.call("HSET", procKey, "groupId", chosenGid, "deadlineAt", tostring(deadlin
 local processingKey2 = ns .. ":processing"
 redis.call("ZADD", processingKey2, deadline, id)
 
+-- Increment active counter
+local activeCountKey = ns .. ":count:active"
+redis.call("INCR", activeCountKey)
+
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then
   local nextScore = tonumber(nextHead[2])

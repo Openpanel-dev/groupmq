@@ -8,6 +8,26 @@ local now = tonumber(ARGV[2])
 local gracePeriod = tonumber(ARGV[3]) or 0
 local maxStalledCount = tonumber(ARGV[4]) or 1
 
+-- Circuit breaker for high concurrency: limit stalled job recovery
+-- to prevent excessive Redis load and race conditions
+local circuitBreakerKey = ns .. ":stalled:circuit"
+local lastCheck = redis.call("GET", circuitBreakerKey)
+if lastCheck then
+  local lastCheckTime = tonumber(lastCheck)
+  if lastCheckTime and (now - lastCheckTime) < 1000 then
+    -- Circuit breaker: only check stalled jobs once per second
+    return {}
+  end
+end
+redis.call("SET", circuitBreakerKey, now, "PX", 2000)
+
+-- BullMQ-inspired: Two-phase stalled detection for better accuracy
+-- Phase 1: Get potentially stalled jobs (jobs past their deadline)
+local potentiallyStalled = redis.call("ZRANGEBYSCORE", processingKey, 0, now - gracePeriod, "LIMIT", 0, 100)
+if not potentiallyStalled or #potentiallyStalled == 0 then
+  return {}
+end
+
 local processingKey = ns .. ':processing'
 local groupsKey = ns .. ':groups'
 local stalledKey = ns .. ':stalled'
@@ -70,7 +90,22 @@ for _, jobId in ipairs(processingJobs) do
       -- If job was completed between our snapshot and now, don't re-add it
       local stillInProcessing = redis.call('ZSCORE', processingKey, jobId)
       
-      if stillInProcessing then
+      -- Additional safety: check if job status is still 'processing' or 'waiting'
+      -- If it's 'completed' or 'failed', don't recover it
+      local currentStatus = redis.call('HGET', jobKey, 'status')
+      
+      -- CRITICAL: For high concurrency, add extra safety checks
+      -- Check if job was recently completed (within last 5 seconds)
+      local finishedOn = redis.call('HGET', jobKey, 'finishedOn')
+      local recentlyCompleted = false
+      if finishedOn then
+        local finishedTime = tonumber(finishedOn)
+        if finishedTime and (now - finishedTime) < 5000 then
+          recentlyCompleted = true
+        end
+      end
+      
+      if stillInProcessing and (currentStatus == 'processing' or currentStatus == 'waiting' or not currentStatus) and not recentlyCompleted then
         -- Job is confirmed to still be in processing, safe to recover
         redis.call('ZREM', processingKey, jobId)
         

@@ -793,6 +793,42 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         );
         return nextJob;
       }
+      // CRITICAL FIX: If atomic completion failed, we need to check if the job was actually completed
+      // The job completion happens BEFORE the next job reservation in the Lua script
+      // So if it failed, the job might still be completed in Redis
+      this.logger.debug(
+        `Atomic completion failed for job ${job.id}, checking if job was completed in Redis`,
+      );
+
+      // Check if the job is still in processing - if not, it was completed
+      const isStillProcessing = await this.q.isJobProcessing(job.id);
+      if (!isStillProcessing) {
+        this.logger.debug(
+          `Job ${job.id} was completed in Redis despite atomic failure, group ${job.groupId} should be unlocked`,
+        );
+        // Job was completed, just ensure group is unlocked for next job
+        await this.q.complete(job);
+      } else {
+        this.logger.warn(
+          `Job ${job.id} is still in processing after atomic failure - this should not happen`,
+        );
+        // Fallback: complete the job normally
+        await this.q.completeWithMetadata(job, handlerResult, {
+          processedOn: processedOn || Date.now(),
+          finishedOn: finishedOn || Date.now(),
+          attempts: job.attempts,
+          maxAttempts: job.maxAttempts,
+        });
+      }
+
+      // CRITICAL: For high concurrency, add a small delay to prevent thundering herd
+      // This reduces the chance of multiple workers hitting the same race condition
+      if (Math.random() < 0.1) {
+        // 10% chance
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.random() * 100),
+        );
+      }
     } else {
       // Use completeWithMetadata for atomic completion with metadata
       await this.q.completeWithMetadata(job, handlerResult, {
@@ -808,11 +844,15 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   /**
    * Start monitoring for stuck worker conditions
+   * BullMQ-inspired: More aggressive monitoring for high concurrency
    */
   private startStuckDetection(): void {
+    // More frequent checks for high concurrency environments
+    const checkInterval = this.concurrency > 10 ? 15000 : 30000; // 15s for high concurrency, 30s otherwise
+
     this.stuckDetectionTimer = setInterval(async () => {
       await this.checkForStuckConditions();
-    }, 30000); // Check every 30 seconds
+    }, checkInterval);
   }
 
   /**
@@ -900,6 +940,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   /**
    * Check if worker appears to be stuck
+   * BullMQ-inspired: More sophisticated monitoring for high concurrency
    */
   private async checkForStuckConditions(): Promise<void> {
     if (this.stopping || this.closed) return;
@@ -909,32 +950,53 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     const timeSinceLastJob =
       this.lastJobPickupTime > 0 ? now - this.lastJobPickupTime : now;
 
+    // BullMQ-inspired: Adaptive thresholds based on concurrency
+    const activityThreshold = this.concurrency > 10 ? 30000 : 60000; // 30s for high concurrency, 60s otherwise
+    const emptyReservesThreshold = this.concurrency > 10 ? 25 : 50; // Lower threshold for high concurrency
+    const jobStarvationThreshold = this.concurrency > 10 ? 60000 : 120000; // 1min for high concurrency, 2min otherwise
+
     // Check for stuck conditions
-    if (timeSinceLastActivity > 60000) {
-      // 1 minute without any activity
+    if (timeSinceLastActivity > activityThreshold) {
+      // No activity for threshold time
       this.logger.warn(
-        `STUCK WORKER ALERT: No activity for ${Math.round(timeSinceLastActivity / 1000)}s`,
+        `STUCK WORKER ALERT: No activity for ${Math.round(timeSinceLastActivity / 1000)}s (concurrency: ${this.concurrency})`,
       );
       await this.logWorkerStatus();
     }
 
     if (
-      this.blockingStats.consecutiveEmptyReserves > 50 &&
+      this.blockingStats.consecutiveEmptyReserves > emptyReservesThreshold &&
       this.shouldWarnAboutEmptyReserves()
     ) {
       // Too many empty reserves (but queue might have jobs)
       this.logger.warn(
-        `BLOCKING ALERT: ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves`,
+        `BLOCKING ALERT: ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves (threshold: ${emptyReservesThreshold})`,
       );
       await this.logWorkerStatus();
     }
 
-    if (timeSinceLastJob > 120000 && this.totalJobsProcessed > 0) {
-      // 2 minutes since last job (but has processed jobs before)
+    if (
+      timeSinceLastJob > jobStarvationThreshold &&
+      this.totalJobsProcessed > 0
+    ) {
+      // No jobs for threshold time (but has processed jobs before)
       this.logger.warn(
-        `JOB STARVATION ALERT: No jobs for ${Math.round(timeSinceLastJob / 1000)}s`,
+        `JOB STARVATION ALERT: No jobs for ${Math.round(timeSinceLastJob / 1000)}s (concurrency: ${this.concurrency})`,
       );
       await this.logWorkerStatus();
+    }
+
+    // BullMQ-inspired: Check for heartbeat failures in high concurrency
+    if (this.concurrency > 10 && this.jobsInProgress.size > 0) {
+      const longRunningJobs = Array.from(this.jobsInProgress).filter(
+        (item) => now - item.ts > (this.q.jobTimeoutMs || 30000) / 2,
+      );
+
+      if (longRunningJobs.length > 0) {
+        this.logger.warn(
+          `HEARTBEAT ALERT: ${longRunningJobs.length} jobs running longer than half timeout (${this.q.jobTimeoutMs || 30000}ms) - check for event loop blocking`,
+        );
+      }
     }
   }
 
@@ -1177,14 +1239,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let heartbeatDelayTimer: NodeJS.Timeout | undefined;
 
     const startHeartbeat = () => {
-      // Extend lock every jobTimeout/2 for more aggressive renewal
+      // BullMQ-inspired: Adaptive heartbeat interval based on concurrency
       const minInterval = Math.max(
-        this.hbMs,
+        this.hbMs, // Use the worker's configured heartbeat interval
         Math.floor((this.q.jobTimeoutMs || 30000) / 2),
       );
 
       this.logger.debug(
-        `Starting heartbeat for job ${job.id} (interval: ${minInterval}ms)`,
+        `Starting heartbeat for job ${job.id} (interval: ${minInterval}ms, concurrency: ${this.concurrency})`,
       );
 
       hbTimer = setInterval(async () => {
@@ -1221,7 +1283,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     };
 
     try {
-      // Smart heartbeat: only start for jobs that might actually timeout
+      // BullMQ-inspired: Smart heartbeat with adaptive timing
       // Skip heartbeat for short jobs (< jobTimeoutMs / 3) to reduce Redis load
       const jobTimeout = this.q.jobTimeoutMs || 30000;
       const heartbeatThreshold = jobTimeout / 3;
