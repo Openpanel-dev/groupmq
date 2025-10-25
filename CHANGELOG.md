@@ -1,3 +1,10 @@
+## [1.0.1-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.4...v1.0.1-next.5) (2025-10-25)
+
+
+### Bug Fixes
+
+* remove ordering for now ([25ae9ce](https://github.com/Openpanel-dev/groupmq/commit/25ae9ce91312f8ec4789ce193cc2695acbae1bfe))
+
 ## [1.0.1-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.3...v1.0.1-next.4) (2025-10-24)
 
 
