@@ -5,6 +5,8 @@ import type Redis from 'ioredis';
 
 export type ScriptName =
   | 'enqueue'
+  | 'stage-enqueue'
+  | 'promote-staged'
   | 'reserve'
   | 'reserve-batch'
   | 'reserve-atomic'

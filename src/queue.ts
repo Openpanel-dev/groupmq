@@ -401,17 +401,28 @@ export class Queue<T = any> {
     const data = opts.data === undefined ? null : opts.data;
     const serializedPayload = JSON.stringify(data);
 
-    const result = await evalScript<string[] | string>(this.r, 'enqueue', [
-      this.ns,
-      opts.groupId,
-      serializedPayload,
-      String(maxAttempts),
-      String(orderMs),
-      String(delayUntil),
-      String(jobId),
-      String(this.keepCompleted),
-      String(now), // Pass client timestamp for accurate timing calculations
-    ]);
+    // Check if ordering window is enabled
+    const windowMsStr = await this.r.get(`${this.ns}:orderingWindowMs`);
+    const windowMs = windowMsStr ? parseInt(windowMsStr, 10) : 0;
+
+    const scriptName = windowMs > 0 ? 'stage-enqueue' : 'enqueue';
+
+    const result = await evalScript<string[] | string>(
+      this.r,
+      scriptName as any,
+      [
+        this.ns,
+        opts.groupId,
+        serializedPayload,
+        String(maxAttempts),
+        String(orderMs),
+        String(delayUntil),
+        String(jobId),
+        String(this.keepCompleted),
+        String(now),
+        windowMs > 0 ? String(windowMs) : (undefined as any),
+      ].filter(Boolean) as string[],
+    );
 
     // Handle new array format that includes job data (avoids race condition)
     // Format: [jobId, groupId, data, attempts, maxAttempts, timestamp, orderMs, delayUntil, status]
@@ -449,6 +460,23 @@ export class Queue<T = any> {
     // Fallback for old format (just jobId string) - this shouldn't happen with updated Lua script
     // but kept for backwards compatibility during rollout
     return this.getJob(result);
+  }
+
+  async setOrderingWindowMs(ms: number): Promise<void> {
+    await this.r.set(`${this.ns}:orderingWindowMs`, Math.max(0, ms));
+  }
+
+  async getOrderingWindowMs(): Promise<number> {
+    const v = await this.r.get(`${this.ns}:orderingWindowMs`);
+    return v ? Math.max(0, parseInt(v, 10)) : 0;
+  }
+
+  async promoteStagedBounded(limit = 512, now = Date.now()): Promise<number> {
+    return evalScript<number>(this.r, 'promote-staged' as any, [
+      this.ns,
+      String(now),
+      String(Math.max(1, limit)),
+    ]);
   }
 
   async reserve(): Promise<ReservedJob<T> | null> {
@@ -1661,6 +1689,13 @@ export class Queue<T = any> {
   async runSchedulerOnce(now = Date.now()): Promise<void> {
     const ok = await this.acquireSchedulerLock(this.schedulerLockTtlMs);
     if (!ok) return;
+    // Promote staged jobs first if ordering window is enabled
+    try {
+      const win = await this.getOrderingWindowMs();
+      if (win > 0) {
+        await this.promoteStagedBounded(512, now);
+      }
+    } catch (_e) {}
     // Reduced limits for faster execution: process a few jobs per tick instead of hundreds
     await this.promoteDelayedJobsBounded(32, now);
     await this.processRepeatingJobsBounded(16, now);
