@@ -1,3 +1,10 @@
+## [1.0.1-next.8](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.7...v1.0.1-next.8) (2025-10-25)
+
+
+### Bug Fixes
+
+* refactor, cleanu, improve concurrency ([bd546a0](https://github.com/Openpanel-dev/groupmq/commit/bd546a06e764ae3dd533baebd6beecc4e6fd85cb))
+
 ## [1.0.1-next.7](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.6...v1.0.1-next.7) (2025-10-25)
 
 
