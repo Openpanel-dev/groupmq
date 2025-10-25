@@ -47,7 +47,6 @@ describe('Stalled Job Detection Tests', () => {
       redis: redis.duplicate(),
       namespace,
       jobTimeoutMs: 5000,
-      orderingMethod: 'none',
     });
   });
 

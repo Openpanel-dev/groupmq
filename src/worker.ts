@@ -177,7 +177,7 @@ export type WorkerOptions<T> = {
    * Interval in milliseconds between scheduler operations.
    * Scheduler promotes delayed jobs and processes cron/repeating jobs.
    *
-   * @default Adaptive: min(5000ms, max(1000ms, schedulerBufferMs * 0.8)) with 1000ms minimum cap
+   * @default 5000 (5 seconds)
    * @example 1000 // For fast cron jobs (every minute or less)
    * @example 10000 // For slow cron jobs (hourly or daily)
    *
@@ -185,11 +185,6 @@ export type WorkerOptions<T> = {
    * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
    * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
    * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
-   * - Scheduler buffering (`orderingMethod: 'scheduler'`): Automatically adjusted to prevent ordering stalls
-   *
-   * **Important:** The scheduler interval is automatically capped at 80% of the scheduler buffer window
-   * (with a 1000ms minimum) to ensure buffered jobs are promoted promptly and don't cause
-   * ordering stalls, while preventing excessive Redis load from very frequent scheduler runs.
    */
   schedulerIntervalMs?: number;
 
@@ -208,20 +203,6 @@ export type WorkerOptions<T> = {
    * - Resource constraints: Increase to reduce Redis load
    */
   blockingTimeoutSec?: number;
-
-  /**
-   * Whether to use atomic completion for better performance and consistency.
-   * Atomic completion completes a job and reserves the next job from the same group in one operation.
-   *
-   * @default true
-   * @example false // Disable for debugging or compatibility
-   *
-   * **When to disable:**
-   * - Debugging: To isolate completion vs reservation issues
-   * - Compatibility: If you have custom completion logic
-   * - Single concurrency: Less benefit with concurrency=1
-   */
-  atomicCompletion?: boolean;
 
   /**
    * Logger configuration for worker operations and debugging.
@@ -324,7 +305,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private schedulerTimer?: NodeJS.Timeout;
   private schedulerMs: number;
   private blockingTimeoutSec: number;
-  private atomicCompletion: boolean;
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
 
@@ -375,23 +355,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.enableCleanup = opts.enableCleanup ?? true;
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for high-concurrency production
 
-    // Ensure scheduler runs more frequently than ordering delay to prevent stalls
-    // But only if scheduler buffering is meaningful (>= 100ms)
+    // Scheduler interval for delayed jobs and cron jobs
     const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
-    const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
-    const schedulerBufferMs = this.q.orderingDelayMs || 0;
-    this.schedulerMs =
-      opts.schedulerIntervalMs ??
-      (schedulerBufferMs >= 100
-        ? Math.min(
-            defaultSchedulerMs,
-            Math.max(minSchedulerMs, schedulerBufferMs * 0.8),
-          )
-        : defaultSchedulerMs);
+    this.schedulerMs = opts.schedulerIntervalMs ?? defaultSchedulerMs;
 
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 1; // 1s default for responsive job pickup (adaptive logic can go lower)
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
-    this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Initialize stalled job detection settings
@@ -626,16 +595,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               await this.logWorkerStatus();
             }
 
-            // Recovery for delayed groups
-            try {
-              const recovered = await this.q.recoverDelayedGroups();
-              if (recovered > 0) {
-                this.logger.debug(`Recovered ${recovered} delayed groups`);
-              }
-            } catch (err) {
-              this.logger.warn(`Recovery error:`, err);
-            }
-
             // Exponential backoff when no jobs are available to prevent tight polling
             // For high concurrency (1000+), be more lenient to avoid false backoff when jobs exist
             const backoffThreshold = this.concurrency >= 100 ? 10 : 3;
@@ -815,7 +774,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     processedOn?: number,
     finishedOn?: number,
   ): Promise<ReservedJob<T> | undefined> {
-    if (this.atomicCompletion && fetchNextCallback?.()) {
+    if (fetchNextCallback?.()) {
       // Try atomic completion with next job reservation
       const nextJob = await this.q.completeAndReserveNextWithMetadata(
         job.id,
@@ -1199,52 +1158,12 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return this.q.add(opts);
   }
 
-  /**
-   * Collect jobs from same group during grace period
-   *
-   * How it works:
-   * 1. Worker picks up first job and holds it in memory
-   * 2. Waits for the grace period to allow concurrent enqueue operations to finish
-   * 3. When new jobs are detected, reset the timer (with decay) and wait again
-   * 4. Repeat until no new jobs arrive for the full grace period
-   * 5. Process all collected jobs sorted by orderMs
-   *
-   * This solves the race condition where jobs are enqueued within 1-2ms:
-   * - Worker reserves job 1 while jobs 2-4 are still being written to Redis
-   * - By always waiting the grace period, we give concurrent writes time to complete
-   * - Then we collect all jobs that finished enqueueing during our wait
-   *
-   * NOTE: The grace window is measured from when WE picked up the job (Date.now()),
-   * NOT from when the job was enqueued. This is critical for handling concurrent enqueues.
-   */
-  private async collectJobsWithGrace(
-    firstJob: ReservedJob<T>,
-  ): Promise<ReservedJob<T>[]> {
-    // ZSET-based ordering: Jobs are already sorted by orderMs in Redis
-    // Just return the single job - Redis ensures correct ordering
-    return [firstJob];
-  }
-
   private async processOne(
     job: ReservedJob<T>,
     fetchNextCallback?: () => boolean,
   ): Promise<void | ReservedJob<T>> {
-    // Collect jobs during grace period if enabled
-    const jobsToProcess = await this.collectJobsWithGrace(job);
-
-    // Process each job in order
-    let nextJob: ReservedJob<T> | undefined | void;
-    for (let i = 0; i < jobsToProcess.length; i++) {
-      const currentJob = jobsToProcess[i];
-      const isLastJob = i === jobsToProcess.length - 1;
-
-      nextJob = await this.processSingleJob(
-        currentJob,
-        isLastJob ? fetchNextCallback : undefined,
-      );
-    }
-
-    // Return the chained job from the last processed job (if any)
+    // Process the single job
+    const nextJob = await this.processSingleJob(job, fetchNextCallback);
     return nextJob;
   }
 

@@ -25,8 +25,6 @@ export type ScriptName =
   | 'get-delayed-jobs'
   | 'get-unique-groups'
   | 'get-unique-groups-count'
-  | 'promote-buffered-groups'
-  | 'recover-delayed-groups'
   | 'cleanup-poisoned-group'
   | 'remove'
   | 'clean-status'

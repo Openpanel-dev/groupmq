@@ -1,9 +1,8 @@
--- argv: ns, nowEpochMs, vtMs, scanLimit, orderingDelayMs
+-- argv: ns, nowEpochMs, vtMs, scanLimit
 local ns = ARGV[1]
 local now = tonumber(ARGV[2])
 local vt = tonumber(ARGV[3])
 local scanLimit = tonumber(ARGV[4]) or 20
-local orderingDelayMs = tonumber(ARGV[5]) or 0
 
 local readyKey = ns .. ":ready"
 
@@ -80,22 +79,6 @@ local headJobId = zpop[1]
 local jobKey = ns .. ":job:" .. headJobId
 local job = redis.call("HMGET", jobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
-
-if orderingDelayMs > 0 and orderMs then
-  local jobOrderMs = tonumber(orderMs)
-  if jobOrderMs then
-    local eligibleAt = jobOrderMs > now and jobOrderMs or (jobOrderMs + orderingDelayMs)
-    if eligibleAt > now then
-      local putBackScore = tonumber(score)
-      redis.call("ZADD", gZ, putBackScore, headJobId)
-      redis.call("ZADD", readyKey, putBackScore, chosenGid)
-      local remainingDelayMs = eligibleAt - now
-      local lockKey = ns .. ":lock:" .. chosenGid
-      redis.call("SET", lockKey, "ordering-delay", "PX", remainingDelayMs)
-      return nil
-    end
-  end
-end
 
 local lockKey = ns .. ":lock:" .. chosenGid
 redis.call("SET", lockKey, id, "PX", vt)

@@ -1429,5 +1429,32 @@
       "jobType": "cpu",
       "multiProcess": true
     }
+  },
+  {
+    "timestamp": 1761382277318,
+    "queueType": "groupmq",
+    "jobType": "cpu",
+    "totalJobs": 5000,
+    "workersCount": 4,
+    "completedJobs": 5000,
+    "durationMs": 63676,
+    "throughputJobsPerSec": 78.52,
+    "avgPickupMs": 30935.81,
+    "avgProcessingMs": 48.7,
+    "avgTotalMs": 30984.51,
+    "p95PickupMs": 58744,
+    "p95ProcessingMs": 54.61,
+    "p95TotalMs": 58788.05,
+    "peakCpuPercent": 68,
+    "peakMemoryMB": 149.8,
+    "avgCpuPercent": 0.1,
+    "avgMemoryMB": 112.4,
+    "settings": {
+      "mq": "groupmq",
+      "jobs": 5000,
+      "workers": 4,
+      "jobType": "cpu",
+      "multiProcess": true
+    }
   }
 ]

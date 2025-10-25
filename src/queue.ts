@@ -92,29 +92,6 @@ export type QueueOptions = {
   reserveScanLimit?: number;
 
   /**
-   * Ordering delay in milliseconds for timestamp-based ordering within groups.
-   *
-   * When provided (> 0), jobs within the same group will be processed in chronological order
-   * based on their `orderMs` timestamp. Jobs that are "too recent" relative to the
-   * last completed job will be delayed until enough time has passed.
-   *
-   * **How it works:**
-   * - When reserving a job, check if it's been at least `orderingDelayMs` since the last job in the group
-   * - If not, defer the reservation and try again later
-   * - Ensures FIFO ordering within each group
-   *
-   * **Use when:**
-   * - Events can arrive out of order due to network latency
-   * - You need strict temporal ordering within groups
-   * - Small delays (50-500ms) are acceptable
-   *
-   * **Example:** `50` - 50ms grace period for network jitter
-   *
-   * @default undefined // No ordering enforcement
-   */
-  orderingDelayMs?: number;
-
-  /**
    * Maximum number of completed jobs to retain for inspection.
    * Jobs beyond this limit are automatically cleaned up.
    *
@@ -342,19 +319,12 @@ export class Queue<T = any> {
   private scanLimit: number;
   private keepCompleted: number;
 
-  // Internal ordering configuration
-  private _orderingDelayMs: number = 0;
   private keepFailed: number;
   private schedulerLockTtlMs: number;
   public name: string;
 
   // Internal tracking for adaptive behavior
   private _consecutiveEmptyReserves = 0;
-
-  // Public getter for ordering configuration
-  public get orderingDelayMs(): number {
-    return this._orderingDelayMs;
-  }
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
 
@@ -382,15 +352,6 @@ export class Queue<T = any> {
     this.r.on('error', (err) => {
       this.logger.error('Redis error (main):', err);
     });
-
-    // Handle ordering configuration - simple and clean
-    this._orderingDelayMs = Math.max(0, opts.orderingDelayMs ?? 0);
-
-    if (this._orderingDelayMs > 0) {
-      this.logger.info(
-        `GroupMQ: Enabled timestamp-based ordering with ${this._orderingDelayMs}ms delay`,
-      );
-    }
   }
 
   get redis(): Redis {
@@ -449,7 +410,6 @@ export class Queue<T = any> {
       String(delayUntil),
       String(jobId),
       String(this.keepCompleted),
-      String(this._orderingDelayMs),
       String(now), // Pass client timestamp for accurate timing calculations
     ]);
 
@@ -499,7 +459,6 @@ export class Queue<T = any> {
       String(now),
       String(this.vt),
       String(this.scanLimit),
-      String(this._orderingDelayMs),
     ]);
 
     if (!raw) return null;
@@ -629,7 +588,6 @@ export class Queue<T = any> {
           String(meta.maxAttempts),
           String(now),
           String(this.jobTimeoutMs),
-          String(this._orderingDelayMs),
         ],
       );
 
@@ -1083,36 +1041,12 @@ export class Queue<T = any> {
       }
     }
 
-    // Factor in ordering delays for smarter blocking
-    if (this._orderingDelayMs > 0) {
-      const nextEligibleTime = this.calculateNextEligibleJobTime();
-      if (nextEligibleTime > 0) {
-        const delayUntilEligible = nextEligibleTime - Date.now();
-        if (
-          delayUntilEligible > 0 &&
-          delayUntilEligible < maximumBlockTimeout * 1000
-        ) {
-          return Math.max(minimumBlockTimeout, delayUntilEligible / 1000);
-        }
-      }
-    }
-
     // Use maxTimeout when draining (similar to BullMQ's drainDelay), but clamp to minimum
     // This keeps the worker responsive while balancing Redis load
     return Math.max(
       minimumBlockTimeout,
       Math.min(maxTimeout, maximumBlockTimeout),
     );
-  }
-
-  /**
-   * Calculate when the next job will be eligible for processing
-   * considering ordering delays
-   */
-  private calculateNextEligibleJobTime(): number {
-    // This would require tracking delayed groups, for now return 0
-    // Could be enhanced with a separate delayed jobs timeline
-    return 0;
   }
 
   /**
@@ -1233,36 +1167,13 @@ export class Queue<T = any> {
   }
 
   /**
-   * Try to reserve another job from the same group (for grace period collection)
-   * This is non-blocking and returns immediately if no job available
-   */
-  async tryReserveFromGroup(groupId: string): Promise<ReservedJob<T> | null> {
-    return this.reserveAtomic(groupId);
-  }
-
-  /**
    * Reserve a job from a specific group atomically (eliminates race conditions)
    * @param groupId - The group to reserve from
-   * @param allowedJobId - Optional job ID that's allowed to bypass the lock (for grace collection)
    */
-  async reserveAtomic(
-    groupId: string,
-    allowedJobId?: string,
-  ): Promise<ReservedJob<T> | null> {
+  async reserveAtomic(groupId: string): Promise<ReservedJob<T> | null> {
     const now = Date.now();
 
-    const args = [
-      this.ns,
-      String(now),
-      String(this.vt),
-      String(groupId),
-      String(this._orderingDelayMs || 0),
-    ];
-
-    // Add allowedJobId if provided (for grace collection)
-    if (allowedJobId) {
-      args.push(allowedJobId);
-    }
+    const args = [this.ns, String(now), String(this.vt), String(groupId)];
 
     const result = await evalScript<string | null>(
       this.r,
@@ -1312,13 +1223,7 @@ export class Queue<T = any> {
     const results = await evalScript<Array<string | null>>(
       this.r,
       'reserve-batch',
-      [
-        this.ns,
-        String(now),
-        String(this.vt),
-        String(Math.max(1, maxBatch)),
-        String(this._orderingDelayMs),
-      ],
+      [this.ns, String(now), String(this.vt), String(Math.max(1, maxBatch))],
     );
     const out: Array<ReservedJob<T>> = [];
     for (const r of results || []) {
@@ -1721,28 +1626,6 @@ export class Queue<T = any> {
   }
 
   /**
-   * Check for groups that might be ready after their ordering delay has expired.
-   * This is a recovery mechanism for groups that were delayed but not re-added to ready queue.
-   */
-  async recoverDelayedGroups(): Promise<number> {
-    if (this._orderingDelayMs <= 0) {
-      return 0;
-    }
-
-    try {
-      const result = await evalScript<number>(
-        this.r,
-        'recover-delayed-groups',
-        [this.ns, String(Date.now()), String(this._orderingDelayMs)],
-      );
-      return result || 0;
-    } catch (error) {
-      this.logger.warn('Error in recoverDelayedGroups:', error);
-      return 0;
-    }
-  }
-
-  /**
    * Distributed one-shot scheduler: promotes delayed jobs and processes repeating jobs.
    * Only proceeds if a short-lived scheduler lock can be acquired.
    */
@@ -1770,7 +1653,6 @@ export class Queue<T = any> {
     if (!ok) return;
     // Reduced limits for faster execution: process a few jobs per tick instead of hundreds
     await this.promoteDelayedJobsBounded(32, now);
-    await this.promoteBufferedGroups(now);
     await this.processRepeatingJobsBounded(16, now);
   }
 
@@ -1795,29 +1677,6 @@ export class Queue<T = any> {
       }
     }
     return moved;
-  }
-
-  /**
-   * Promote groups from buffering state to ready when their buffering window has elapsed.
-   * This is called by the scheduler to enforce scheduler-based buffering (`orderingMethod: 'scheduler'`).
-   * Only runs if buffer window >= 100ms (below that, buffering overhead isn't worth it).
-   */
-  async promoteBufferedGroups(now = Date.now()): Promise<number> {
-    if (this._orderingDelayMs < 100) {
-      return 0;
-    }
-
-    try {
-      const promoted = await evalScript<number>(
-        this.r,
-        'promote-buffered-groups',
-        [this.ns, String(now)],
-      );
-      return promoted || 0;
-    } catch (error) {
-      this.logger.warn('Error promoting buffered groups:', error);
-      return 0;
-    }
   }
 
   /**
@@ -1885,7 +1744,6 @@ export class Queue<T = any> {
           String(0),
           String(randomUUID()),
           String(this.keepCompleted),
-          String(this._orderingDelayMs),
         ]);
 
         processed++;

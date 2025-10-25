@@ -1,6 +1,6 @@
 -- Complete a job with metadata and atomically reserve the next job from the same group
 -- argv: ns, completedJobId, groupId, status, timestamp, resultOrError, keepCompleted, keepFailed,
---       processedOn, finishedOn, attempts, maxAttempts, now, vt, orderingDelayMs
+--       processedOn, finishedOn, attempts, maxAttempts, now, vt
 local ns = ARGV[1]
 local completedJobId = ARGV[2]
 local gid = ARGV[3]
@@ -15,7 +15,6 @@ local attempts = ARGV[11]
 local maxAttempts = ARGV[12]
 local now = tonumber(ARGV[13])
 local vt = tonumber(ARGV[14])
-local orderingDelayMs = tonumber(ARGV[15]) or 0
 
 -- Part 1: Remove completed job from processing
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
@@ -112,25 +111,6 @@ local nextJobKey = ns .. ":job:" .. nextJobId
 local job = redis.call("HMGET", nextJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
-if orderingDelayMs > 0 and orderMs then
-  local jobOrderMs = tonumber(orderMs)
-  if jobOrderMs then
-    local eligibleAt = jobOrderMs > now and jobOrderMs or (jobOrderMs + orderingDelayMs)
-    if eligibleAt > now then
-      local putBackScore = tonumber(score)
-      redis.call("ZADD", gZ, putBackScore, nextJobId)
-      local remainingDelayMs = eligibleAt - now
-      redis.call("SET", lockKey, "ordering-delay", "PX", remainingDelayMs)
-      local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-      if nextHead and #nextHead >= 2 then
-        local nextScore = tonumber(nextHead[2])
-        local readyKey = ns .. ":ready"
-        redis.call("ZADD", readyKey, nextScore, groupId)
-      end
-      return nil
-    end
-  end
-end
 
 redis.call("SET", lockKey, id, "PX", vt)
 

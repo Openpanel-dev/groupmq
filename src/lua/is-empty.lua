@@ -19,11 +19,6 @@ if readyCount > 0 then
   return 0
 end
 
--- Check buffering groups
-local bufferingCount = redis.call("ZCARD", ns .. ":buffering")
-if bufferingCount > 0 then
-  return 0
-end
 
 -- Check all groups for waiting jobs
 local groups = redis.call("SMEMBERS", ns .. ":groups")
