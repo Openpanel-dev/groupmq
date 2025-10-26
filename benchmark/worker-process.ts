@@ -27,12 +27,16 @@ async function ioIntensiveJob(): Promise<void> {
   await fs.promises.unlink(tmpFile);
 }
 
+async function emptyJob(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // Parse command line arguments
 const args = process.argv.slice(2);
 const config = {
   mq: args[0] as 'bullmq' | 'groupmq',
   namespace: args[1],
-  jobType: args[2] as 'cpu' | 'io',
+  jobType: args[2] as 'cpu' | 'io' | 'empty',
   workerId: parseInt(args[3], 10),
 };
 
@@ -40,7 +44,12 @@ console.log(
   `🔧 Worker ${config.workerId} starting (${config.mq}, ${config.jobType})`,
 );
 
-const jobHandler = config.jobType === 'cpu' ? cpuIntensiveJob : ioIntensiveJob;
+const jobHandler =
+  config.jobType === 'cpu'
+    ? cpuIntensiveJob
+    : config.jobType === 'io'
+      ? ioIntensiveJob
+      : emptyJob;
 
 // Start worker based on queue type
 async function startWorker() {
@@ -101,7 +110,7 @@ async function startWorker() {
           `COMPLETED:${job.id}:${enqueuedAt}:${startTime}:${Date.now()}:${pickupMs}:${processingMs}`,
         );
       },
-      atomicCompletion: true,
+      concurrency: 1,
     });
 
     worker.on('error', (err) => {

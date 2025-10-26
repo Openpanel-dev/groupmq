@@ -188,6 +188,10 @@ describe('Job Tests', () => {
 
     const job = await q.add({ groupId: 'g1', data: { n: 1 } });
 
+    // Remove the job before worker starts
+    const removed = await q.remove(job.id);
+    expect(removed).toBe(true);
+
     let processed = false;
     const worker = new Worker<{ n: number }>({
       queue: q,
@@ -197,10 +201,6 @@ describe('Job Tests', () => {
       },
     });
     worker.run();
-
-    // Remove the job before it gets picked up
-    const removed = await q.remove(job.id);
-    expect(removed).toBe(true);
 
     // Wait a bit and ensure nothing processed
     await q.waitForEmpty(); // queue should be empty since we removed

@@ -1032,7 +1032,7 @@ export class Queue<T = any> {
    */
   private getBlockTimeout(maxTimeout: number, blockUntil?: number): number {
     const minimumBlockTimeout = 0.001; // 1ms like BullMQ for fast job pickup
-    const maximumBlockTimeout = 1; // 1s max for high responsiveness
+    const maximumBlockTimeout = 5; // 5s max to reduce idle CPU usage
 
     // Handle delayed jobs case (when we know exactly when next job should be processed)
     if (blockUntil) {

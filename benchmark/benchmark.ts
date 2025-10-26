@@ -25,7 +25,7 @@ program
     100,
   )
   .option('--workers <n>', 'Number of workers', (v) => parseInt(v, 10), 4)
-  .option('--job-type <cpu|io>', 'Type of job workload', 'cpu')
+  .option('--job-type <cpu|io|empty>', 'Type of job workload', 'cpu')
   .option(
     '--multi-process',
     'Use separate processes for workers (better CPU parallelization)',
@@ -38,7 +38,7 @@ type BenchmarkOptions = {
   mq: 'bullmq' | 'groupmq' | 'both';
   jobs: number;
   workers: number;
-  jobType: 'cpu' | 'io';
+  jobType: 'cpu' | 'io' | 'empty';
   multiProcess: boolean;
   output: string;
 };
@@ -116,6 +116,10 @@ async function ioIntensiveJob(): Promise<void> {
   await fs.promises.writeFile(tmpFile, data);
   await fs.promises.readFile(tmpFile);
   await fs.promises.unlink(tmpFile).catch(() => {});
+}
+
+async function emptyJob(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // Utility functions
@@ -389,7 +393,7 @@ class BullMQAdapter extends QueueAdapter {
 
       if ((Date.now() - startTime) % 2000 < 1000) {
         console.log(
-          `⏳ Progress: ${this.completedJobs.length} completed, ${active.length} active, ${waiting.length} waiting, ${delayed.length} delayed`,
+          `⏳ Time: ${new Date().toISOString()} Progress: ${this.completedJobs.length} completed, ${active.length} active, ${waiting.length} waiting, ${delayed.length} delayed`,
         );
       }
 
@@ -478,7 +482,10 @@ class GroupMQAdapter extends QueueAdapter {
 
   async enqueueJobs(count: number): Promise<void> {
     console.log(`Enqueueing ${count} jobs...`);
-    const totalNumOfGroups = this.opts.jobs * 0.4;
+    // Create groups with ~10 jobs each to enable parallelism
+    // This matches typical real-world usage where jobs are grouped by user/tenant/session
+    // but there are many concurrent groups
+    const totalNumOfGroups = Math.max(1, Math.floor(this.opts.jobs / 10));
     for (let i = 0; i < count; i++) {
       await this.queue.add({
         groupId: `group-${i % totalNumOfGroups}`,
@@ -648,7 +655,7 @@ class GroupMQAdapter extends QueueAdapter {
 
         if ((now - startTime) % 2000 < 1000) {
           console.log(
-            `⏳ Progress: ${this.completedJobs.length} completed, ${stats.active} active, ${stats.waiting} waiting, ${stats.delayed} delayed`,
+            `⏳ Time: ${new Date().toISOString()} Progress: ${this.completedJobs.length} completed, ${stats.active} active, ${stats.waiting} waiting, ${stats.delayed} delayed`,
           );
         }
         lastStatsCheck = now;
@@ -707,7 +714,12 @@ async function runBenchmark(
   const adapter =
     opts.mq === 'bullmq' ? new BullMQAdapter(opts) : new GroupMQAdapter(opts);
   const monitor = new SystemMonitor();
-  const jobHandler = opts.jobType === 'cpu' ? cpuIntensiveJob : ioIntensiveJob;
+  const jobHandler =
+    opts.jobType === 'cpu'
+      ? cpuIntensiveJob
+      : opts.jobType === 'io'
+        ? ioIntensiveJob
+        : emptyJob;
 
   try {
     // Setup

@@ -507,6 +507,8 @@ describe('Graceful Shutdown Tests', () => {
       console.log('Completed', job.id);
     });
     worker.run();
+    // Give worker time to pick up the job before closing
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await worker.close(2000);
     expect(isCompleted).toBe(true);
     expect(worker.isProcessing()).toBe(false);
