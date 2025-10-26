@@ -1,3 +1,15 @@
+## [1.1.0-next.1](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.10...v1.1.0-next.1) (2025-10-26)
+
+
+### Features
+
+* ordering is back ([70f5310](https://github.com/Openpanel-dev/groupmq/commit/70f53109fc6b156545d4625b1e5fa0b3015a458f))
+
+
+### Bug Fixes
+
+* errors caused on high load ([61fda76](https://github.com/Openpanel-dev/groupmq/commit/61fda76f3dbc5ffabe94517eff3a03148adadb44))
+
 ## [1.0.1-next.10](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.9...v1.0.1-next.10) (2025-10-26)
 
 
