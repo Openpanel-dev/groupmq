@@ -104,6 +104,23 @@ end
 
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
+-- Validate job data exists (handle corrupted/missing job hash)
+if not id or id == false then
+  -- Job hash is missing/corrupted, clean up group active list
+  local groupActiveKey = ns .. ":g:" .. chosenGid .. ":active"
+  redis.call("LREM", groupActiveKey, 1, headJobId)
+  
+  -- Re-add next job to ready queue if exists
+  local gZ = ns .. ":g:" .. chosenGid
+  local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if nextHead and #nextHead >= 2 then
+    local nextScore = tonumber(nextHead[2])
+    redis.call("ZADD", readyKey, nextScore, chosenGid)
+  end
+  
+  return nil
+end
+
 -- Remove the group from ready queue
 redis.call("ZREMRANGEBYRANK", readyKey, chosenIndex, chosenIndex)
 

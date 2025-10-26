@@ -71,6 +71,23 @@ headJobId = zpop[1]
 local job = redis.call("HMGET", jobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
+-- Validate job data exists (handle corrupted/missing job hash)
+if not id or id == false then
+  -- Job hash is missing/corrupted, clean up if needed
+  if not allowedJobId or activeCount == 0 then
+    redis.call("LREM", groupActiveKey, 1, headJobId)
+  end
+  
+  -- Re-add next job to ready queue if exists
+  local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if nextHead and #nextHead >= 2 then
+    local nextScore = tonumber(nextHead[2])
+    redis.call("ZADD", readyKey, nextScore, targetGroupId)
+  end
+  
+  return nil
+end
+
 -- BullMQ-style: Push to group active list if not already there (not grace collection)
 if not allowedJobId or activeCount == 0 then
   -- Normal reserve: add this job to active list

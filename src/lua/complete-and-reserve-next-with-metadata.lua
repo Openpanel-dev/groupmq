@@ -16,14 +16,22 @@ local maxAttempts = ARGV[12]
 local now = tonumber(ARGV[13])
 local vt = tonumber(ARGV[14])
 
--- Part 1: Remove completed job from processing
+-- Part 1: Verify job is actually being processed (prevent late/duplicate completions)
+local jobKey = ns .. ":job:" .. completedJobId
+local jobStatus = redis.call("HGET", jobKey, "status")
+
+-- If job is not in "processing" state, this is a late completion
+if jobStatus ~= "processing" then
+  return nil
+end
+
+-- Part 2: Remove completed job from processing
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
 redis.call("ZREM", ns .. ":processing", completedJobId)
 
 -- No counter operations - use ZCARD for counts
 
--- Part 2: Record job metadata (completed or failed)
-local jobKey = ns .. ":job:" .. completedJobId
+-- Part 3: Record job metadata (completed or failed)
 
 if status == "completed" then
   local completedKey = ns .. ":completed"
@@ -112,6 +120,21 @@ local nextJobId = zpop[1]
 local nextJobKey = ns .. ":job:" .. nextJobId
 local job = redis.call("HMGET", nextJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
+
+-- Validate job data exists (handle corrupted/missing job hash)
+if not id or id == false then
+  -- Job hash is missing/corrupted, clean up and return completion only
+  -- Re-add next job to ready queue if exists
+  local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if nextHead and #nextHead >= 2 then
+    local nextScore = tonumber(nextHead[2])
+    local readyKey = ns .. ":ready"
+    redis.call("ZADD", readyKey, nextScore, groupId)
+  end
+  
+  -- Return nil to indicate no next job was reserved
+  return nil
+end
 
 -- Push next job to active list (chaining)
 redis.call("LPUSH", groupActiveKey, id)

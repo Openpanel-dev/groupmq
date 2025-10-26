@@ -15,6 +15,21 @@ local maxAttempts = ARGV[11]
 
 local jobKey = ns .. ":job:" .. jobId
 
+-- Verify job exists and check current status to prevent race conditions
+local currentStatus = redis.call("HGET", jobKey, "status")
+if not currentStatus then
+  -- Job doesn't exist, likely already cleaned up
+  return 0
+end
+
+-- If job is in "waiting" state, this might be a late completion after stalled recovery
+-- In this case, we should not overwrite the status or delete the job
+if currentStatus == "waiting" then
+  -- Job was recovered by stalled check and possibly being processed by another worker
+  -- Ignore this late completion to prevent corruption
+  return 0
+end
+
 if status == "completed" then
   local completedKey = ns .. ":completed"
   

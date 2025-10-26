@@ -14,7 +14,19 @@ local finishedOn = ARGV[10]
 local attempts = ARGV[11]
 local maxAttempts = ARGV[12]
 
--- Part 1: Remove from processing and release group (BullMQ-style)
+-- Part 1: Verify job is actually being processed (prevent late/duplicate completions)
+local jobKey = ns .. ":job:" .. jobId
+local jobStatus = redis.call("HGET", jobKey, "status")
+
+-- If job is not in "processing" state, this is a late completion (already recovered/completed)
+-- This prevents the race where stalled check re-queues a job and then the slow worker tries to complete it
+if jobStatus ~= "processing" then
+  -- Job was already handled (recovered, failed, or completed by another worker)
+  -- Return 0 to indicate this completion was ignored
+  return 0
+end
+
+-- Part 2: Remove from processing and release group (BullMQ-style)
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
