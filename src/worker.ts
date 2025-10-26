@@ -374,6 +374,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+
+    // Auto-start promoter if orderingDelayMs is configured
+    if (this.q.orderingDelayMs > 0) {
+      this.q.startPromoter().catch((err) => {
+        this.logger.error('Failed to start staging promoter:', err);
+      });
+    }
+
     this.run();
   }
 

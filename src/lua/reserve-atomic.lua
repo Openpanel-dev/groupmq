@@ -1,11 +1,10 @@
 -- Atomic reserve operation that checks lock and reserves in one operation
--- argv: ns, nowEpochMs, vtMs, targetGroupId, orderingDelayMs, allowedJobId (optional)
+-- argv: ns, nowEpochMs, vtMs, targetGroupId, allowedJobId (optional)
 local ns = ARGV[1]
 local now = tonumber(ARGV[2])
 local vt = tonumber(ARGV[3])
 local targetGroupId = ARGV[4]
-local orderingDelayMs = tonumber(ARGV[5]) or 0
-local allowedJobId = ARGV[6] -- If provided, allow reserve if lock matches this job ID
+local allowedJobId = ARGV[5] -- If provided, allow reserve if lock matches this job ID
 
 local readyKey = ns .. ":ready"
 local gZ = ns .. ":g:" .. targetGroupId
@@ -71,19 +70,6 @@ headJobId = zpop[1]
 
 local job = redis.call("HMGET", jobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
-
-if orderingDelayMs > 0 and orderMs then
-  local jobOrderMs = tonumber(orderMs)
-  if jobOrderMs then
-    local eligibleAt = jobOrderMs > now and jobOrderMs or (jobOrderMs + orderingDelayMs)
-    if eligibleAt > now then
-      local putBackScore = tonumber(score)
-      redis.call("ZADD", gZ, putBackScore, headJobId)
-      -- Don't update active list since we're putting the job back
-      return nil
-    end
-  end
-end
 
 -- BullMQ-style: Push to group active list if not already there (not grace collection)
 if not allowedJobId or activeCount == 0 then

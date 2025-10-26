@@ -16,6 +16,7 @@ export type ScriptName =
   | 'cleanup'
   | 'promote-delayed-jobs'
   | 'promote-delayed-one'
+  | 'promote-staged'
   | 'change-delay'
   | 'get-active-count'
   | 'get-waiting-count'

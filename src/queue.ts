@@ -130,6 +130,25 @@ export type QueueOptions = {
    * @example 1000 // 1 second for faster environments
    */
   schedulerLockTtlMs?: number;
+
+  /**
+   * Ordering delay in milliseconds. When set, jobs with orderMs will be staged
+   * and promoted only after orderMs + orderingDelayMs to ensure proper ordering
+   * even when producers are out of sync.
+   *
+   * @default 0 (no staging, jobs processed immediately)
+   * @example 200 // Wait 200ms to ensure all jobs arrive in order
+   * @example 1000 // Wait 1 second for strict ordering
+   *
+   * **When to use:**
+   * - Distributed producers with clock drift
+   * - Strict timestamp ordering required
+   * - Network latency between producers
+   *
+   * **Note:** Only applies to jobs with orderMs set. Jobs without orderMs
+   * are never staged.
+   */
+  orderingDelayMs?: number;
 };
 
 /**
@@ -321,10 +340,17 @@ export class Queue<T = any> {
 
   private keepFailed: number;
   private schedulerLockTtlMs: number;
+  public orderingDelayMs: number;
   public name: string;
 
   // Internal tracking for adaptive behavior
   private _consecutiveEmptyReserves = 0;
+
+  // Promoter service for staging system
+  private promoterRedis?: Redis;
+  private promoterRunning = false;
+  private promoterLockId?: string;
+  private promoterInterval?: NodeJS.Timeout;
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
 
@@ -342,6 +368,7 @@ export class Queue<T = any> {
     this.keepCompleted = Math.max(0, opts.keepCompleted ?? 0);
     this.keepFailed = Math.max(0, opts.keepFailed ?? 0);
     this.schedulerLockTtlMs = opts.schedulerLockTtlMs ?? 1500;
+    this.orderingDelayMs = opts.orderingDelayMs ?? 0;
 
     // Initialize logger first
     this.logger =
@@ -411,6 +438,7 @@ export class Queue<T = any> {
       String(jobId),
       String(this.keepCompleted),
       String(now), // Pass client timestamp for accurate timing calculations
+      String(this.orderingDelayMs), // Pass orderingDelayMs for staging logic
     ]);
 
     // Handle new array format that includes job data (avoids race condition)
@@ -1520,9 +1548,156 @@ export class Queue<T = any> {
   }
 
   /**
+   * Start the promoter service for staging system.
+   * Promoter listens to Redis keyspace notifications and promotes staged jobs when ready.
+   * This is idempotent - calling multiple times has no effect if already running.
+   */
+  async startPromoter(): Promise<void> {
+    if (this.promoterRunning || this.orderingDelayMs <= 0) {
+      return; // Already running or not needed
+    }
+
+    this.promoterRunning = true;
+    this.promoterLockId = randomUUID();
+
+    try {
+      // Create duplicate Redis connection for pub/sub
+      this.promoterRedis = this.r.duplicate();
+
+      // Try to enable keyspace notifications
+      try {
+        await this.promoterRedis.config('SET', 'notify-keyspace-events', 'Ex');
+        this.logger.debug(
+          'Enabled Redis keyspace notifications for staging promoter',
+        );
+      } catch (err) {
+        this.logger.warn(
+          'Failed to enable keyspace notifications. Promoter will use polling fallback.',
+          err,
+        );
+      }
+
+      // Get Redis database number for keyspace event channel
+      const db = this.promoterRedis.options.db ?? 0;
+
+      const timerKey = `${this.ns}:stage:timer`;
+      const expiredChannel = `__keyevent@${db}__:expired`;
+
+      // Subscribe to keyspace expiration events
+      await this.promoterRedis.subscribe(expiredChannel, (err) => {
+        if (err) {
+          this.logger.error('Failed to subscribe to keyspace events:', err);
+        } else {
+          this.logger.debug(`Subscribed to ${expiredChannel}`);
+        }
+      });
+
+      // Handle expiration events
+      this.promoterRedis.on('message', async (channel, message) => {
+        if (channel === expiredChannel && message === timerKey) {
+          await this.runPromotion();
+        }
+      });
+
+      // Fallback: polling interval (100ms) in case keyspace notifications fail
+      this.promoterInterval = setInterval(async () => {
+        await this.runPromotion();
+      }, 100);
+
+      // Initial promotion check
+      await this.runPromotion();
+
+      this.logger.debug('Staging promoter started');
+    } catch (err) {
+      this.logger.error('Failed to start promoter:', err);
+      this.promoterRunning = false;
+      await this.stopPromoter();
+    }
+  }
+
+  /**
+   * Run a single promotion cycle with distributed locking
+   */
+  private async runPromotion(): Promise<void> {
+    if (!this.promoterRunning) {
+      return;
+    }
+
+    const lockKey = `${this.ns}:promoter:lock`;
+    const lockTtl = 30000; // 30 seconds
+
+    try {
+      // Try to acquire lock
+      const acquired = await this.r.set(
+        lockKey,
+        this.promoterLockId!,
+        'PX',
+        lockTtl,
+        'NX',
+      );
+
+      if (acquired === 'OK') {
+        try {
+          // Promote staged jobs
+          const promoted = await evalScript<number>(this.r, 'promote-staged', [
+            this.ns,
+            String(Date.now()),
+            String(100), // Limit per batch
+          ]);
+
+          if (promoted > 0) {
+            this.logger.debug(`Promoted ${promoted} staged jobs`);
+          }
+        } finally {
+          // Release lock (only if it's still ours)
+          const currentLockValue = await this.r.get(lockKey);
+          if (currentLockValue === this.promoterLockId) {
+            await this.r.del(lockKey);
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.error('Error during promotion:', err);
+    }
+  }
+
+  /**
+   * Stop the promoter service
+   */
+  async stopPromoter(): Promise<void> {
+    if (!this.promoterRunning) return;
+
+    this.promoterRunning = false;
+
+    // Clear interval
+    if (this.promoterInterval) {
+      clearInterval(this.promoterInterval);
+      this.promoterInterval = undefined;
+    }
+
+    // Close promoter Redis connection
+    if (this.promoterRedis) {
+      try {
+        await this.promoterRedis.unsubscribe();
+        await this.promoterRedis.quit();
+      } catch (_err) {
+        try {
+          this.promoterRedis.disconnect();
+        } catch (_e) {}
+      }
+      this.promoterRedis = undefined;
+    }
+
+    this.logger.debug('Staging promoter stopped');
+  }
+
+  /**
    * Close underlying Redis connections
    */
   async close(): Promise<void> {
+    // Stop promoter first
+    await this.stopPromoter();
+
     try {
       await this.r.quit();
     } catch (_e) {

@@ -29,6 +29,7 @@ local inDelayed = redis.call("ZSCORE", delayedKey, jobId)
 
 if newDelayUntil > 0 and newDelayUntil > now then
   -- Job should be delayed
+  redis.call("HSET", jobKey, "status", "delayed")
   if inDelayed then
     -- Update existing delay
     redis.call("ZADD", delayedKey, newDelayUntil, jobId)
@@ -43,6 +44,7 @@ if newDelayUntil > 0 and newDelayUntil > now then
   end
 else
   -- Job should be ready immediately
+  redis.call("HSET", jobKey, "status", "waiting")
   if inDelayed then
     -- Remove from delayed
     redis.call("ZREM", delayedKey, jobId)
