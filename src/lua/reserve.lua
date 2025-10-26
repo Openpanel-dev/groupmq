@@ -35,7 +35,9 @@ for _, jobId in ipairs(expiredJobs) do
           local headScore = tonumber(head[2])
           redis.call("ZADD", readyKey, headScore, gid)
         end
-        redis.call("DEL", ns .. ":lock:" .. gid)
+        -- Remove from group active list (BullMQ-style)
+        local groupActiveKey = ns .. ":g:" .. gid .. ":active"
+        redis.call("LREM", groupActiveKey, 1, jobId)
         redis.call("DEL", procKey)
         redis.call("ZREM", processingKey, jobId)
       end
@@ -56,31 +58,41 @@ local headJobId = nil
 local job = nil
 
 -- Try to atomically acquire a group and its head job
+-- BullMQ-style: use per-group active list instead of group locks
 for i = 1, #groups, 2 do
   local gid = groups[i]
-  local lockKey = ns .. ":lock:" .. gid
   local gZ = ns .. ":g:" .. gid
+  local groupActiveKey = ns .. ":g:" .. gid .. ":active"
   
-  -- Check if group has jobs and try to atomically acquire lock
-  local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-  if head and #head >= 2 then
-    local tempJobId = head[1]
-    local tempJobKey = ns .. ":job:" .. tempJobId
-    
-    -- Try to atomically acquire the lock using the job ID as the lock value
-    local lockAcquired = redis.call("SET", lockKey, tempJobId, "PX", vt, "NX")
-    if lockAcquired then
-      -- Successfully acquired lock, now get the job
-      local zpop = redis.call("ZPOPMIN", gZ, 1)
-      if zpop and #zpop > 0 then
-        headJobId = zpop[1]
-        job = redis.call("HMGET", tempJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
-        chosenGid = gid
-        chosenIndex = (i + 1) / 2 - 1
-        break
-      else
-        -- No job available, release the lock
-        redis.call("DEL", lockKey)
+  -- Check if group has no active jobs (BullMQ-style gating)
+  local activeCount = redis.call("LLEN", groupActiveKey)
+  if activeCount == 0 then
+    -- Check if group has jobs
+    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+    if head and #head >= 2 then
+      local headJobId = head[1]
+      local headJobKey = ns .. ":job:" .. headJobId
+      
+      -- Skip if head job is delayed (will be promoted later)
+      local jobStatus = redis.call("HGET", headJobKey, "status")
+      if jobStatus ~= "delayed" then
+        -- Pop the job and push to active list atomically
+        local zpop = redis.call("ZPOPMIN", gZ, 1)
+        if zpop and #zpop > 0 then
+          headJobId = zpop[1]
+          -- Read the popped job (use headJobId to avoid races)
+          headJobKey = ns .. ":job:" .. headJobId
+          job = redis.call("HMGET", headJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
+          
+          -- Push to group active list (enforces 1-per-group)
+          redis.call("LPUSH", groupActiveKey, headJobId)
+          
+          chosenGid = gid
+          chosenIndex = (i + 1) / 2 - 1
+          -- Mark job as processing for accurate stalled detection and idempotency
+          redis.call("HSET", headJobKey, "status", "processing")
+          break
+        end
       end
     end
   end

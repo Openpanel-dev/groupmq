@@ -1151,8 +1151,19 @@ export class Queue<T = any> {
           `Blocking found group but reserve failed: group=${groupId} (reserve took ${reserveDuration}ms)`,
         );
 
-        // Handle poisoned groups (all jobs exceeded max attempts)
-        await this.cleanupPoisonedGroup(groupId);
+        // Restore the group back to ready with its original score to avoid losing it
+        try {
+          await this.r.zadd(readyKey, Number(score), groupId);
+          this.logger.debug(
+            `Restored group ${groupId} to ready with score ${score} after failed atomic reserve`,
+          );
+        } catch (_e) {
+          // best-effort restore; ignore errors
+        }
+
+        // Increment consecutive empty reserves and fall back to general reserve scan
+        this._consecutiveEmptyReserves = this._consecutiveEmptyReserves + 1;
+        return this.reserve();
       }
       return job;
     } catch (err) {

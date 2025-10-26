@@ -26,6 +26,10 @@ if not groupId then
   return 1 -- treat as moved even if metadata missing
 end
 
+-- Mark job as waiting (no longer delayed)
+redis.call("HSET", jobKey, "status", "waiting")
+redis.call("HDEL", jobKey, "runAt")
+
 local gZ = ns .. ":g:" .. groupId
 local head = redis.call("ZRANGE", gZ, 0, 0)
 if head and #head > 0 and head[1] == jobId then

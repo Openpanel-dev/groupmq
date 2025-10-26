@@ -82,17 +82,21 @@ elseif status == "failed" then
   end
 end
 
--- Part 3: Handle group lock and get next job
-local lockKey = ns .. ":lock:" .. gid
-local val = redis.call("GET", lockKey)
-if val ~= completedJobId then
+-- Part 3: Handle group active list and get next job (BullMQ-style)
+local groupActiveKey = ns .. ":g:" .. gid .. ":active"
+local activeJobId = redis.call("LINDEX", groupActiveKey, 0)
+
+-- Verify this job is the active one
+if activeJobId ~= completedJobId then
   return nil
 end
+
+-- Remove completed job from active list
+redis.call("LPOP", groupActiveKey)
 
 local gZ = ns .. ":g:" .. gid
 local zpop = redis.call("ZPOPMIN", gZ, 1)
 if not zpop or #zpop == 0 then
-  redis.call("DEL", lockKey)
   -- Clean up empty group
   local jobCount = redis.call("ZCARD", gZ)
   if jobCount == 0 then
@@ -109,8 +113,8 @@ local nextJobKey = ns .. ":job:" .. nextJobId
 local job = redis.call("HMGET", nextJobKey, "id","groupId","data","attempts","maxAttempts","seq","timestamp","orderMs","score")
 local id, groupId, payload, attempts, maxAttempts, seq, enq, orderMs, score = job[1], job[2], job[3], job[4], job[5], job[6], job[7], job[8], job[9]
 
-
-redis.call("SET", lockKey, id, "PX", vt)
+-- Push next job to active list (chaining)
+redis.call("LPUSH", groupActiveKey, id)
 
 local procKey = ns .. ":processing:" .. id
 local deadline = now + vt
@@ -120,6 +124,9 @@ local processingKey = ns .. ":processing"
 redis.call("ZADD", processingKey, deadline, id)
 
 -- No counter operations - use ZCARD for counts
+
+-- Mark next job as processing for accurate stalled detection
+redis.call("HSET", nextJobKey, "status", "processing")
 
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then

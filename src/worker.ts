@@ -560,17 +560,19 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             }
           }
 
-          // Circuit breaker: if too many consecutive blocking failures, use non-blocking
-          const useBlocking =
+          // BullMQ-style: only perform a blocking reserve when we are drained (no pending work in queue)
+          // Otherwise, fetch sequentially without blocking to avoid thundering herd
+          const allowBlocking =
+            asyncFifoQueue.numTotal() === 0 &&
             this.consecutiveBlockingFailures < this.maxBlockingFailures;
 
-          const fetchedJob = useBlocking
+          const fetchedJob = allowBlocking
             ? this.q.reserveBlocking(
                 this.blockingTimeoutSec,
                 blockUntil,
                 this.blockingClient ?? undefined,
               )
-            : this.q.reserve(); // Fall back to non-blocking
+            : this.q.reserve();
 
           asyncFifoQueue.add(fetchedJob);
 
@@ -595,7 +597,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             this.blockingStats.consecutiveEmptyReserves++;
 
             // Increment circuit breaker for blocking failures
-            if (useBlocking) {
+            if (allowBlocking) {
               this.consecutiveBlockingFailures++;
             }
 
@@ -620,27 +622,28 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               await this.logWorkerStatus();
             }
 
-            // Exponential backoff when no jobs are available to prevent tight polling
-            // For high concurrency (100+), be more lenient to avoid false backoff when jobs exist
-            const backoffThreshold = this.concurrency >= 100 ? 5 : 3; // Lower threshold for high concurrency
+            // BullMQ-inspired: Only apply exponential backoff when queue is truly empty (no jobs processing)
+            // This prevents slowdown during the tail end when a few jobs are still processing
+            const backoffThreshold = this.concurrency >= 100 ? 5 : 3;
             if (
-              this.blockingStats.consecutiveEmptyReserves > backoffThreshold
+              this.blockingStats.consecutiveEmptyReserves > backoffThreshold &&
+              asyncFifoQueue.numTotal() === 0 // Critical: only backoff when nothing is processing
             ) {
               // Adaptive backoff based on concurrency level
-              const maxBackoff = this.concurrency >= 100 ? 2000 : 5000; // Higher cap for high concurrency to prevent stuck queues
+              const maxBackoff = this.concurrency >= 100 ? 2000 : 5000;
               if (this.emptyReserveBackoffMs === 0) {
-                this.emptyReserveBackoffMs = this.concurrency >= 100 ? 100 : 50; // Start higher for high concurrency
+                this.emptyReserveBackoffMs = this.concurrency >= 100 ? 100 : 50;
               } else {
                 this.emptyReserveBackoffMs = Math.min(
                   maxBackoff,
-                  Math.max(100, this.emptyReserveBackoffMs * 1.2), // Slower growth for high concurrency
+                  Math.max(100, this.emptyReserveBackoffMs * 1.2),
                 );
               }
 
               // Only log backoff every 20th time to reduce spam
               if (this.blockingStats.consecutiveEmptyReserves % 20 === 0) {
                 this.logger.debug(
-                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms before next reserve attempt (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves}, concurrency: ${this.concurrency})`,
+                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves}, jobs in progress: ${asyncFifoQueue.numTotal()})`,
                 );
               }
 
@@ -659,42 +662,27 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           }
         }
 
-        // Phase 2: Wait for a job to become available from the queue
-        // Phase 2: Process jobs immediately (no batching delays)
-        const jobsToProcess: ReservedJob<T>[] = [];
+        // Phase 2: BullMQ-style - Fetch ONE job and process immediately
+        // This is more responsive than batching, especially at high concurrency
+        let job: ReservedJob<T> | void;
+        do {
+          job = await asyncFifoQueue.fetch();
+        } while (!job && asyncFifoQueue.numQueued() > 0);
 
-        // Fetch jobs one by one and process immediately
-        for (let i = 0; i < this.concurrency; i++) {
-          const job = await asyncFifoQueue.fetch();
-          if (job) {
-            jobsToProcess.push(job);
-          } else {
-            break;
-          }
-        }
-
-        if (jobsToProcess.length > 0) {
-          this.totalJobsProcessed += jobsToProcess.length;
+        if (job) {
+          this.totalJobsProcessed++;
           this.logger.debug(
-            `Processing ${jobsToProcess.length} jobs immediately (concurrency: ${this.concurrency})`,
+            `Processing job ${job.id} from group ${job.groupId} immediately`,
           );
 
-          // Process all jobs in parallel using Promise.allSettled
-          const processingPromises = jobsToProcess.map((job) =>
-            this.processJob(
-              job,
-              () => asyncFifoQueue.numTotal() <= this.concurrency,
-              this.jobsInProgress,
-            ).then((chainedJob) => {
-              // If atomic completion returned a chained job, return it as the result
-              return chainedJob;
-            }),
+          // BullMQ-style: Add processing promise immediately, don't wait for completion
+          const processingPromise = this.processJob(
+            job,
+            () => asyncFifoQueue.numTotal() <= this.concurrency,
+            this.jobsInProgress,
           );
 
-          // Add all processing promises to the queue immediately (don't wait!)
-          for (const promise of processingPromises) {
-            asyncFifoQueue.add(promise);
-          }
+          asyncFifoQueue.add(processingPromise);
         }
       } catch (err) {
         if (this.stopping) {

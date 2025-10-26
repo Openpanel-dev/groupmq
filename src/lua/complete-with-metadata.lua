@@ -14,18 +14,20 @@ local finishedOn = ARGV[10]
 local attempts = ARGV[11]
 local maxAttempts = ARGV[12]
 
--- Part 1: Remove from processing and unlock group
+-- Part 1: Remove from processing and release group (BullMQ-style)
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
 -- No counter operations - use ZCARD for counts
 
-local lockKey = ns .. ":lock:" .. gid
-local val = redis.call("GET", lockKey)
-local hadLock = (val == jobId)
+-- Check if this job is the active one and remove it (BullMQ-style)
+local groupActiveKey = ns .. ":g:" .. gid .. ":active"
+local activeJobId = redis.call("LINDEX", groupActiveKey, 0)
+local wasActive = (activeJobId == jobId)
 
-if hadLock then
-  redis.call("DEL", lockKey)
+if wasActive then
+  -- Remove from active list
+  redis.call("LPOP", groupActiveKey)
   
   -- Check if there are more jobs in this group
   local gZ = ns .. ":g:" .. gid
@@ -33,6 +35,7 @@ if hadLock then
   if jobCount == 0 then
     -- Remove empty group
     redis.call("DEL", gZ)
+    redis.call("DEL", groupActiveKey)
     redis.call("SREM", ns .. ":groups", gid)
     redis.call("ZREM", ns .. ":ready", gid)
     redis.call("DEL", ns .. ":buffer:" .. gid)

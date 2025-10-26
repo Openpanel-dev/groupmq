@@ -4,13 +4,17 @@ local jobId = ARGV[2]
 local gid = ARGV[3]
 local extendMs = tonumber(ARGV[4])
 
-local lockKey = ns .. ":lock:" .. gid
-local val = redis.call("GET", lockKey)
-if val == jobId then
-  redis.call("PEXPIRE", lockKey, extendMs)
-  local procKey = ns .. ":processing:" .. jobId
+-- BullMQ-style: only extend processing deadline, no group lock
+local procKey = ns .. ":processing:" .. jobId
+local exists = redis.call("EXISTS", procKey)
+if exists == 1 then
   local now = tonumber(redis.call("TIME")[1]) * 1000
-  redis.call("HSET", procKey, "deadlineAt", tostring(now + extendMs))
+  local newDeadline = now + extendMs
+  redis.call("HSET", procKey, "deadlineAt", tostring(newDeadline))
+  
+  -- Also update the processing ZSET score
+  local processingKey = ns .. ":processing"
+  redis.call("ZADD", processingKey, newDeadline, jobId)
   return 1
 end
 return 0
