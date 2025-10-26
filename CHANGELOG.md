@@ -1,3 +1,10 @@
+## [1.0.1-next.10](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.9...v1.0.1-next.10) (2025-10-26)
+
+
+### Bug Fixes
+
+* improve idle ([ea7f78e](https://github.com/Openpanel-dev/groupmq/commit/ea7f78e1e8774b0da238f21c3f003b78c067f260))
+
 ## [1.0.1-next.9](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.8...v1.0.1-next.9) (2025-10-26)
 
 
