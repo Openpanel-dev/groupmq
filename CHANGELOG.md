@@ -1,3 +1,10 @@
+## [1.0.1-next.9](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.8...v1.0.1-next.9) (2025-10-26)
+
+
+### Bug Fixes
+
+* still trying to figure out how to avoid stalled jobs when large concurrency ([baa542a](https://github.com/Openpanel-dev/groupmq/commit/baa542aeb7b9e4f9bc432b89e06faaa982449cba))
+
 ## [1.0.1-next.8](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.7...v1.0.1-next.8) (2025-10-25)
 
 
