@@ -793,33 +793,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         );
         return nextJob;
       }
-      // CRITICAL FIX: If atomic completion failed, we need to check if the job was actually completed
-      // The job completion happens BEFORE the next job reservation in the Lua script
-      // So if it failed, the job might still be completed in Redis
+      // Atomic chaining failed - one of these scenarios:
+      // 1. Job was already completed/recovered (early return from Lua script)
+      // 2. Job was completed but no next job to chain (group empty, ordering delay, or not at active list head)
+      // In both cases, the job is properly completed and group is unlocked. No action needed.
       this.logger.debug(
-        `Atomic completion failed for job ${job.id}, checking if job was completed in Redis`,
+        `Atomic chaining returned nil for job ${job.id} - job completed, but no next job chained`,
       );
-
-      // Check if the job is still in processing - if not, it was completed
-      const isStillProcessing = await this.q.isJobProcessing(job.id);
-      if (!isStillProcessing) {
-        this.logger.debug(
-          `Job ${job.id} was completed in Redis despite atomic failure, group ${job.groupId} should be unlocked`,
-        );
-        // Job was completed, just ensure group is unlocked for next job
-        await this.q.complete(job);
-      } else {
-        this.logger.warn(
-          `Job ${job.id} is still in processing after atomic failure - this should not happen`,
-        );
-        // Fallback: complete the job normally
-        await this.q.completeWithMetadata(job, handlerResult, {
-          processedOn: processedOn || Date.now(),
-          finishedOn: finishedOn || Date.now(),
-          attempts: job.attempts,
-          maxAttempts: job.maxAttempts,
-        });
-      }
 
       // CRITICAL: For high concurrency, add a small delay to prevent thundering herd
       // This reduces the chance of multiple workers hitting the same race condition
