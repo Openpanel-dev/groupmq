@@ -27,25 +27,26 @@ for i = 1, #ids do
   -- Remove from the primary set first to avoid reprocessing
   redis.call('ZREM', setKey, id)
 
-  if status == 'delayed' then
-    -- Also remove from group and update ready queue accordingly
-    local groupId = redis.call('HGET', jobKey, 'groupId')
-    if groupId then
-      local gZ = ns .. ':g:' .. groupId
-      local readyKey = ns .. ':ready'
-      redis.call('ZREM', gZ, id)
-      local jobCount = redis.call('ZCARD', gZ)
-      if jobCount == 0 then
-        redis.call('ZREM', readyKey, groupId)
-        -- Clean up empty group
-        redis.call('DEL', gZ)
-        redis.call('SREM', ns .. ':groups', groupId)
-      else
-        local head = redis.call('ZRANGE', gZ, 0, 0, 'WITHSCORES')
-        if head and #head >= 2 then
-          local headScore = tonumber(head[2])
-          redis.call('ZADD', readyKey, headScore, groupId)
-        end
+  -- Remove from group and update ready queue for ALL statuses
+  -- This prevents poisoned groups when completed/failed jobs are cleaned
+  local groupId = redis.call('HGET', jobKey, 'groupId')
+  if groupId then
+    local gZ = ns .. ':g:' .. groupId
+    local readyKey = ns .. ':ready'
+    redis.call('ZREM', gZ, id)
+    local jobCount = redis.call('ZCARD', gZ)
+    if jobCount == 0 then
+      redis.call('ZREM', readyKey, groupId)
+      -- Clean up empty group
+      redis.call('DEL', gZ)
+      redis.call('SREM', ns .. ':groups', groupId)
+    elseif status == 'delayed' then
+      -- Only update ready queue score for delayed jobs
+      -- (completed/failed jobs shouldn't affect ready queue)
+      local head = redis.call('ZRANGE', gZ, 0, 0, 'WITHSCORES')
+      if head and #head >= 2 then
+        local headScore = tonumber(head[2])
+        redis.call('ZADD', readyKey, headScore, groupId)
       end
     end
   end

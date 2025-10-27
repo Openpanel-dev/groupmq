@@ -1406,14 +1406,29 @@ export class Queue<T = any> {
           `Blocking found group but reserve failed: group=${groupId} (reserve took ${reserveDuration}ms)`,
         );
 
-        // Restore the group back to ready with its original score to avoid losing it
+        // Check if group actually has jobs before restoring to prevent infinite loops
+        // This prevents poisoned groups (empty groups in ready queue) from being restored
         try {
-          await this.r.zadd(readyKey, Number(score), groupId);
-          this.logger.debug(
-            `Restored group ${groupId} to ready with score ${score} after failed atomic reserve`,
-          );
+          const groupKey = `${this.ns}:g:${groupId}`;
+          const jobCount = await this.r.zcard(groupKey);
+
+          if (jobCount > 0) {
+            // Group has jobs, restore it to ready queue
+            await this.r.zadd(readyKey, Number(score), groupId);
+            this.logger.debug(
+              `Restored group ${groupId} to ready with score ${score} after failed atomic reserve (${jobCount} jobs)`,
+            );
+          } else {
+            // Group is empty (poisoned), don't restore it
+            this.logger.warn(
+              `Not restoring empty group ${groupId} - preventing poisoned group loop`,
+            );
+          }
         } catch (_e) {
-          // best-effort restore; ignore errors
+          // If check fails, err on the side of not restoring to prevent infinite loops
+          this.logger.warn(
+            `Failed to check group ${groupId} job count, not restoring`,
+          );
         }
 
         // Increment consecutive empty reserves and fall back to general reserve scan
