@@ -1,3 +1,15 @@
+## [1.1.0-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.1...v1.1.0-next.2) (2025-10-27)
+
+
+### Features
+
+* try auto batching! ([537faa3](https://github.com/Openpanel-dev/groupmq/commit/537faa3907e4954f789ce4017ec1dcac4f124d89))
+
+
+### Bug Fixes
+
+* minor improvements ([3c4d567](https://github.com/Openpanel-dev/groupmq/commit/3c4d567d9365513fe95c302db5a76c721c9bd95f))
+
 ## [1.1.0-next.1](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.10...v1.1.0-next.1) (2025-10-26)
 
 
