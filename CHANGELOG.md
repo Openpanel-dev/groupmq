@@ -1,3 +1,12 @@
+## [1.1.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.4...v1.1.0-next.5) (2025-10-27)
+
+
+### Bug Fixes
+
+* add dragonfly bemchmark ([efd4cfa](https://github.com/Openpanel-dev/groupmq/commit/efd4cfa2b805de705ba83278edf912150a2e1029))
+* cleanup ([846802b](https://github.com/Openpanel-dev/groupmq/commit/846802b080fc61050ceb40352315f0a8bcda6dcb))
+* dragonfly compatibility ([7599356](https://github.com/Openpanel-dev/groupmq/commit/7599356c257ae82e34cc70cb0b7bde0ec2fe2d75))
+
 ## [1.1.0-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.3...v1.1.0-next.4) (2025-10-27)
 
 
