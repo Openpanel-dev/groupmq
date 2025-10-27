@@ -372,8 +372,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       opts.stalledInterval ?? (this.concurrency > 50 ? 60000 : 30000); // 60s for high concurrency, 30s otherwise
     this.maxStalledCount =
       opts.maxStalledCount ?? (this.concurrency > 50 ? 2 : 1); // Allow 2 stalls for high concurrency
-    this.stalledGracePeriod =
-      opts.stalledGracePeriod ?? (this.concurrency > 50 ? 5000 : 0); // 5s grace for high concurrency
+    // CRITICAL: Grace period must be >= heartbeat startup delay to prevent false positives
+    // Default 5s covers heartbeat startup (2s) + 1 heartbeat interval (2s) + network/load buffer (1s)
+    this.stalledGracePeriod = opts.stalledGracePeriod ?? 5000; // 5s grace for all configurations
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
@@ -1090,9 +1091,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     const startHeartbeat = () => {
       // BullMQ-inspired: Adaptive heartbeat interval based on concurrency
-      const minInterval = Math.max(
+      // CRITICAL: Heartbeat must run frequently enough to prevent stalled detection
+      // Run every jobTimeout/3 (with max 10s) to ensure multiple heartbeats before timeout
+      const jobTimeout = this.q.jobTimeoutMs || 30000;
+      const minInterval = Math.min(
         this.hbMs, // Use the worker's configured heartbeat interval
-        Math.floor((this.q.jobTimeoutMs || 30000) / 2),
+        Math.floor(jobTimeout / 3), // At least 3 heartbeats within timeout window
+        10000, // Cap at 10s maximum
       );
 
       this.logger.debug(
@@ -1134,11 +1139,14 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     try {
       // BullMQ-inspired: Smart heartbeat with adaptive timing
-      // Skip heartbeat for short jobs (< jobTimeoutMs / 3) to reduce Redis load
+      // CRITICAL FIX: Start heartbeat much earlier to prevent false stalled detection
+      // Under high Redis load, jobs can be marked stalled before heartbeat even starts!
       const jobTimeout = this.q.jobTimeoutMs || 30000;
-      const heartbeatThreshold = jobTimeout / 3;
+      // Start heartbeat after 10% of timeout OR 2 seconds (whichever is smaller)
+      // This ensures heartbeat is active long before stalled detection can trigger
+      const heartbeatThreshold = Math.min(jobTimeout * 0.1, 2000);
 
-      // Start heartbeat after threshold delay for potentially long-running jobs
+      // Start heartbeat early for potentially long-running jobs
       heartbeatDelayTimer = setTimeout(() => {
         startHeartbeat();
       }, heartbeatThreshold);

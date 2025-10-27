@@ -40,6 +40,8 @@ for _, jobId in ipairs(candidates) do
     local maxAttempts = tonumber(h[3]) or 3
     local status = h[5]
     local finishedOn = tonumber(h[6] or "0")
+    -- CRITICAL: Don't recover jobs that are completing (prevents race with completion)
+    -- "completing" is a temporary state set by complete-with-metadata.lua to prevent races
     if status == "processing" then
       stalledCount = stalledCount + 1
       redis.call("HSET", jobKey, "stalledCount", stalledCount)

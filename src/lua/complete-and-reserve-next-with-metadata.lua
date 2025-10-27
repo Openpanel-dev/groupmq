@@ -16,28 +16,38 @@ local maxAttempts = ARGV[12]
 local now = tonumber(ARGV[13])
 local vt = tonumber(ARGV[14])
 
--- Part 1: Verify job is actually being processed (prevent late/duplicate completions)
+-- Part 1: Atomically verify and mark completion (prevent duplicate processing)
 local jobKey = ns .. ":job:" .. completedJobId
-local jobStatus = redis.call("HGET", jobKey, "status")
+local processingKey = ns .. ":processing"
 
--- If job is not in "processing" state, this is a late completion
-if jobStatus ~= "processing" then
+-- CRITICAL: Check both status AND processing set membership atomically
+-- This prevents race with stalled job recovery
+local jobStatus = redis.call("HGET", jobKey, "status")
+local stillInProcessing = redis.call("ZSCORE", processingKey, completedJobId)
+
+-- If job is not in "processing" state OR not in processing set, this is late/duplicate
+if jobStatus ~= "processing" or not stillInProcessing then
   return nil
 end
 
--- Part 2: Remove completed job from processing
+-- Atomically mark as completed and remove from processing
+-- This prevents stalled checker from racing with us
+redis.call("HSET", jobKey, "status", "completing") -- Temporary status to block stalled checker
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
-redis.call("ZREM", ns .. ":processing", completedJobId)
+redis.call("ZREM", processingKey, completedJobId)
 
 -- Part 3: Record job metadata (completed or failed)
 
 if status == "completed" then
   local completedKey = ns .. ":completed"
   
+  -- CRITICAL: Always set final status first, even if job will be deleted
+  -- This ensures any concurrent reads see "completed", not "completing"
+  redis.call("HSET", jobKey, "status", "completed")
+  
   if keepCompleted > 0 then
-    -- Store job metadata and add to completed set
+    -- Store full job metadata and add to completed set
     redis.call("HSET", jobKey, 
-      "status", "completed",
       "processedOn", processedOn,
       "finishedOn", finishedOn,
       "attempts", attempts,
@@ -61,7 +71,7 @@ if status == "completed" then
       end
     end
   else
-    -- keepCompleted == 0: Delete immediately
+    -- keepCompleted == 0: Delete immediately (status already set above)
     redis.call("DEL", jobKey)
     redis.call("DEL", ns .. ":unique:" .. completedJobId)
   end
@@ -70,9 +80,11 @@ elseif status == "failed" then
   local failedKey = ns .. ":failed"
   local errorInfo = cjson.decode(resultOrError)
   
+  -- CRITICAL: Always set final status first, even if job will be deleted
+  redis.call("HSET", jobKey, "status", "failed")
+  
   if keepFailed > 0 then
     redis.call("HSET", jobKey,
-      "status", "failed",
       "failedReason", errorInfo.message or "Error",
       "failedName", errorInfo.name or "Error",
       "stacktrace", errorInfo.stack or "",
@@ -83,6 +95,7 @@ elseif status == "failed" then
     )
     redis.call("ZADD", failedKey, timestamp, completedJobId)
   else
+    -- Delete job (status already set above)
     redis.call("DEL", jobKey)
     redis.call("DEL", ns .. ":unique:" .. completedJobId)
   end
@@ -92,13 +105,20 @@ end
 local groupActiveKey = ns .. ":g:" .. gid .. ":active"
 local activeJobId = redis.call("LINDEX", groupActiveKey, 0)
 
--- Verify this job is the active one
-if activeJobId ~= completedJobId then
+-- Always clean up this job from active list, even if not at head
+-- This prevents stale active lists from race conditions
+if activeJobId == completedJobId then
+  -- Normal case: this job is at the head of active list
+  redis.call("LPOP", groupActiveKey)
+else
+  -- Race condition: job is not at head (maybe already removed, or wrong job)
+  -- Clean it up anyway to prevent stale entries
+  redis.call("LREM", groupActiveKey, 1, completedJobId)
+  
+  -- If active list had a different job or was empty, don't try to reserve next
+  -- Return nil to indicate no chaining
   return nil
 end
-
--- Remove completed job from active list
-redis.call("LPOP", groupActiveKey)
 
 local gZ = ns .. ":g:" .. gid
 local zpop = redis.call("ZPOPMIN", gZ, 1)
