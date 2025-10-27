@@ -32,6 +32,11 @@ program
     false,
   )
   .option('--output <file>', 'Output file for results', '')
+  .option(
+    '--db <local|redis|dragonfly>',
+    'Redis database to use (local=6379, redis=6384, dragonfly=6385)',
+    'local',
+  )
   .parse();
 
 type BenchmarkOptions = {
@@ -41,8 +46,19 @@ type BenchmarkOptions = {
   jobType: 'cpu' | 'io' | 'empty';
   multiProcess: boolean;
   output: string;
+  db: 'local' | 'redis' | 'dragonfly';
 };
 const cliOpts = program.opts() as BenchmarkOptions;
+
+// Map database option to Redis connection details
+function getRedisConfig(db: string): { host: string; port: number } {
+  switch (db) {
+    case 'dragonfly':
+      return { host: 'localhost', port: 6385 };
+    default:
+      return { host: 'localhost', port: 6384 };
+  }
+}
 
 // Types
 interface JobMetrics {
@@ -357,15 +373,19 @@ class BullMQAdapter extends QueueAdapter {
   private workerProcesses: any[] = [];
   private completedJobs: JobMetrics[] = [];
   private queueName: string;
-  constructor(_opts: BenchmarkOptions) {
+  private opts: BenchmarkOptions;
+
+  constructor(opts: BenchmarkOptions) {
     super();
+    this.opts = opts;
     this.queueName = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   async setup(): Promise<void> {
+    const redisConfig = getRedisConfig(this.opts.db);
     this.redis = new Redis({
-      host: 'localhost',
-      port: 6379,
+      host: redisConfig.host,
+      port: redisConfig.port,
       maxRetriesPerRequest: null,
     });
 
@@ -449,6 +469,7 @@ class BullMQAdapter extends QueueAdapter {
           this.queueName,
           cliOpts.jobType,
           i.toString(),
+          cliOpts.db,
         ],
         {
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -611,14 +632,15 @@ class GroupMQAdapter extends QueueAdapter {
 
   constructor(opts: BenchmarkOptions) {
     super();
-    this.namespace = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.namespace = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}}`;
     this.opts = opts;
   }
 
   async setup(): Promise<void> {
+    const redisConfig = getRedisConfig(this.opts.db);
     this.redis = new Redis({
-      host: 'localhost',
-      port: 6379,
+      host: redisConfig.host,
+      port: redisConfig.port,
       maxRetriesPerRequest: null,
     });
 
@@ -712,6 +734,7 @@ class GroupMQAdapter extends QueueAdapter {
           this.namespace,
           cliOpts.jobType,
           i.toString(),
+          cliOpts.db,
         ],
         {
           stdio: ['pipe', 'pipe', 'pipe'],
