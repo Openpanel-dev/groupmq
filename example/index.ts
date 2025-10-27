@@ -25,6 +25,10 @@ const run = async () => {
     namespace: 'example',
     keepCompleted: 100000,
     keepFailed: 100,
+    autoBatch: {
+      size: 10,
+      maxWaitMs: 50,
+    },
   });
 
   const CONCURRENCY = 4;
@@ -99,17 +103,17 @@ const run = async () => {
   const groups = [
     ...new Array(25).fill(null).map((_, i) => `groupId_${i + 1}`),
   ];
-  // setInterval(async () => {
-  //   const groupId = groups[Math.floor(Math.random() * groups.length)]!;
-  //   await queue.add({
-  //     data: {
-  //       id: Math.random().toString(36).substring(2, 15),
-  //       jobShouldTakeThisLongMs: Math.random() * 1000,
-  //       groupId,
-  //     },
-  //     groupId,
-  //   });
-  // }, 1_000);
+  setInterval(async () => {
+    const groupId = groups[Math.floor(Math.random() * groups.length)]!;
+    await queue.add({
+      data: {
+        id: Math.random().toString(36).substring(2, 15),
+        jobShouldTakeThisLongMs: Math.random() * 1000,
+        groupId,
+      },
+      groupId,
+    });
+  }, 5);
 
   app.get('/add', async (c) => {
     const groups = [
