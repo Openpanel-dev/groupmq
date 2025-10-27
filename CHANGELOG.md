@@ -1,3 +1,10 @@
+## [1.1.0-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.3...v1.1.0-next.4) (2025-10-27)
+
+
+### Bug Fixes
+
+* stalled issues during load ([51af9c1](https://github.com/Openpanel-dev/groupmq/commit/51af9c168f0eb982cca017974bf4dd622281d0e4))
+
 ## [1.1.0-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.2...v1.1.0-next.3) (2025-10-27)
 
 
