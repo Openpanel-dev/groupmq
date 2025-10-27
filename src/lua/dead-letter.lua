@@ -1,7 +1,7 @@
 -- argv: ns, jobId, groupId
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local groupId = ARGV[3]
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local groupId = ARGV[2]
 local gZ = ns .. ":g:" .. groupId
 local readyKey = ns .. ":ready"
 

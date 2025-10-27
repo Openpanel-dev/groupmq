@@ -1,10 +1,10 @@
 -- Batch enqueue multiple jobs atomically
 -- argv: ns, jobsJson, keepCompleted, clientTimestamp, orderingDelayMs
-local ns = ARGV[1]
-local jobsJson = ARGV[2]
-local keepCompleted = tonumber(ARGV[3]) or 0
-local clientTimestamp = tonumber(ARGV[4])
-local orderingDelayMs = tonumber(ARGV[5]) or 0
+local ns = KEYS[1]
+local jobsJson = ARGV[1]
+local keepCompleted = tonumber(ARGV[2]) or 0
+local clientTimestamp = tonumber(ARGV[3])
+local orderingDelayMs = tonumber(ARGV[4]) or 0
 
 local jobs = cjson.decode(jobsJson)
 

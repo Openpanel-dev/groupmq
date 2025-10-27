@@ -1,8 +1,8 @@
 -- argv: ns, nowEpochMs, vtMs, maxBatch
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
-local vt = tonumber(ARGV[3])
-local maxBatch = tonumber(ARGV[4]) or 16
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
+local vt = tonumber(ARGV[2])
+local maxBatch = tonumber(ARGV[3]) or 16
 
 local readyKey = ns .. ":ready"
 local processingKey = ns .. ":processing"

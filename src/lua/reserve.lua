@@ -1,8 +1,8 @@
 -- argv: ns, nowEpochMs, vtMs, scanLimit
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
-local vt = tonumber(ARGV[3])
-local scanLimit = tonumber(ARGV[4]) or 20
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
+local vt = tonumber(ARGV[2])
+local scanLimit = tonumber(ARGV[3]) or 20
 
 local readyKey = ns .. ":ready"
 

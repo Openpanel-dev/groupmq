@@ -1,7 +1,7 @@
 -- argv: ns, jobId, backoffMs
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local backoffMs = tonumber(ARGV[3]) or 0
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local backoffMs = tonumber(ARGV[2]) or 0
 
 local jobKey = ns .. ":job:" .. jobId
 local gid = redis.call("HGET", jobKey, "groupId")

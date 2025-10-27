@@ -1,5 +1,5 @@
 -- argv: ns
-local ns = ARGV[1]
+local ns = KEYS[1]
 
 -- Check processing jobs
 local processingCount = redis.call("ZCARD", ns .. ":processing")

@@ -1,6 +1,6 @@
 -- argv: ns, nowEpochMs
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
 
 local readyKey = ns .. ":ready"
 local processingKey = ns .. ":processing"

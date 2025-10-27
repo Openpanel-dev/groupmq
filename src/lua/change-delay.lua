@@ -1,8 +1,8 @@
 -- argv: ns, jobId, newDelayUntil, now
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local newDelayUntil = tonumber(ARGV[3])
-local now = tonumber(ARGV[4])
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local newDelayUntil = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
 
 local jobKey = ns .. ":job:" .. jobId
 local delayedKey = ns .. ":delayed"

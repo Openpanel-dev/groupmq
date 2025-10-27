@@ -1,14 +1,14 @@
 -- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, clientTimestamp, orderingDelayMs
-local ns = ARGV[1]
-local groupId = ARGV[2]
-local data = ARGV[3]
-local maxAttempts = tonumber(ARGV[4])
-local orderMs = tonumber(ARGV[5])
-local delayUntil = tonumber(ARGV[6])
-local jobId = ARGV[7]
-local keepCompleted = tonumber(ARGV[8]) or 0
-local clientTimestamp = tonumber(ARGV[9])
-local orderingDelayMs = tonumber(ARGV[10]) or 0
+local ns = KEYS[1]
+local groupId = ARGV[1]
+local data = ARGV[2]
+local maxAttempts = tonumber(ARGV[3])
+local orderMs = tonumber(ARGV[4])
+local delayUntil = tonumber(ARGV[5])
+local jobId = ARGV[6]
+local keepCompleted = tonumber(ARGV[7]) or 0
+local clientTimestamp = tonumber(ARGV[8])
+local orderingDelayMs = tonumber(ARGV[9]) or 0
 
 local readyKey = ns .. ":ready"
 local delayedKey = ns .. ":delayed"

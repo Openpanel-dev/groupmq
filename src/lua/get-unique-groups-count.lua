@@ -1,5 +1,5 @@
 -- argv: ns
-local ns = ARGV[1]
+local ns = KEYS[1]
 local groupsKey = ns .. ":groups"
 local groupIds = redis.call("SMEMBERS", groupsKey)
 local count = 0

@@ -549,18 +549,23 @@ export class Queue<T = any> {
 
     const serializedPayload = JSON.stringify(opts.data);
 
-    const result = await evalScript<string[] | string>(this.r, 'enqueue', [
-      this.ns,
-      opts.groupId,
-      serializedPayload,
-      String(opts.maxAttempts),
-      String(opts.orderMs),
-      String(delayUntil),
-      String(opts.jobId),
-      String(this.keepCompleted),
-      String(now), // Pass client timestamp for accurate timing calculations
-      String(this.orderingDelayMs), // Pass orderingDelayMs for staging logic
-    ]);
+    const result = await evalScript<string[] | string>(
+      this.r,
+      'enqueue',
+      [
+        this.ns,
+        opts.groupId,
+        serializedPayload,
+        String(opts.maxAttempts),
+        String(opts.orderMs),
+        String(delayUntil),
+        String(opts.jobId),
+        String(this.keepCompleted),
+        String(now), // Pass client timestamp for accurate timing calculations
+        String(this.orderingDelayMs), // Pass orderingDelayMs for staging logic
+      ],
+      1,
+    );
 
     // Handle new array format that includes job data (avoids race condition)
     // Format: [jobId, groupId, data, attempts, maxAttempts, timestamp, orderMs, delayUntil, status]
@@ -638,6 +643,7 @@ export class Queue<T = any> {
           String(now),
           String(this.orderingDelayMs),
         ],
+        1,
       );
 
       // Resolve all promises with job entities
@@ -702,12 +708,12 @@ export class Queue<T = any> {
   async reserve(): Promise<ReservedJob<T> | null> {
     const now = Date.now();
 
-    const raw = await evalScript<string | null>(this.r, 'reserve', [
-      this.ns,
-      String(now),
-      String(this.vt),
-      String(this.scanLimit),
-    ]);
+    const raw = await evalScript<string | null>(
+      this.r,
+      'reserve',
+      [this.ns, String(now), String(this.vt), String(this.scanLimit)],
+      1,
+    );
 
     if (!raw) return null;
 
@@ -759,11 +765,12 @@ export class Queue<T = any> {
    * is kept for backward compatibility and testing only.
    */
   async complete(job: { id: string; groupId: string }) {
-    await evalScript<number>(this.r, 'complete', [
-      this.ns,
-      job.id,
-      job.groupId,
-    ]);
+    await evalScript<number>(
+      this.r,
+      'complete',
+      [this.ns, job.id, job.groupId],
+      1,
+    );
   }
 
   /**
@@ -780,20 +787,25 @@ export class Queue<T = any> {
       maxAttempts: number;
     },
   ): Promise<void> {
-    await evalScript<number>(this.r, 'complete-with-metadata', [
-      this.ns,
-      job.id,
-      job.groupId,
-      'completed',
-      String(meta.finishedOn),
-      JSON.stringify(result ?? null),
-      String(this.keepCompleted),
-      String(this.keepFailed),
-      String(meta.processedOn),
-      String(meta.finishedOn),
-      String(meta.attempts),
-      String(meta.maxAttempts),
-    ]);
+    await evalScript<number>(
+      this.r,
+      'complete-with-metadata',
+      [
+        this.ns,
+        job.id,
+        job.groupId,
+        'completed',
+        String(meta.finishedOn),
+        JSON.stringify(result ?? null),
+        String(this.keepCompleted),
+        String(this.keepFailed),
+        String(meta.processedOn),
+        String(meta.finishedOn),
+        String(meta.attempts),
+        String(meta.maxAttempts),
+      ],
+      1,
+    );
   }
 
   /**
@@ -837,6 +849,7 @@ export class Queue<T = any> {
           String(now),
           String(this.jobTimeoutMs),
         ],
+        1,
       );
 
       if (!result) {
@@ -896,18 +909,25 @@ export class Queue<T = any> {
   }
 
   async retry(jobId: string, backoffMs = 0) {
-    return evalScript<number>(this.r, 'retry', [
-      this.ns,
-      jobId,
-      String(backoffMs),
-    ]);
+    return evalScript<number>(
+      this.r,
+      'retry',
+      [this.ns, jobId, String(backoffMs)],
+
+      1,
+    );
   }
 
   /**
    * Dead letter a job (remove from group and optionally store in dead letter queue)
    */
   async deadLetter(jobId: string, groupId: string) {
-    return evalScript<number>(this.r, 'dead-letter', [this.ns, jobId, groupId]);
+    return evalScript<number>(
+      this.r,
+      'dead-letter',
+      [this.ns, jobId, groupId],
+      1,
+    );
   }
 
   /**
@@ -931,19 +951,24 @@ export class Queue<T = any> {
     const maxAttempts = meta.maxAttempts ?? this.defaultMaxAttempts;
 
     try {
-      await evalScript<number>(this.r, 'record-job-result', [
-        this.ns,
-        job.id,
-        'completed',
-        String(finishedOn),
-        JSON.stringify(result ?? null),
-        String(this.keepCompleted),
-        String(this.keepFailed),
-        String(processedOn),
-        String(finishedOn),
-        String(attempts),
-        String(maxAttempts),
-      ]);
+      await evalScript<number>(
+        this.r,
+        'record-job-result',
+        [
+          this.ns,
+          job.id,
+          'completed',
+          String(finishedOn),
+          JSON.stringify(result ?? null),
+          String(this.keepCompleted),
+          String(this.keepFailed),
+          String(processedOn),
+          String(finishedOn),
+          String(attempts),
+          String(maxAttempts),
+        ],
+        1,
+      );
     } catch (error) {
       this.logger.error(`Error recording completion for job ${job.id}:`, error);
       throw error;
@@ -1016,19 +1041,24 @@ export class Queue<T = any> {
     const errorInfo = JSON.stringify({ message, name, stack });
 
     try {
-      await evalScript<number>(this.r, 'record-job-result', [
-        this.ns,
-        job.id,
-        'failed',
-        String(finishedOn),
-        errorInfo,
-        String(this.keepCompleted),
-        String(this.keepFailed),
-        String(processedOn),
-        String(finishedOn),
-        String(attempts),
-        String(maxAttempts),
-      ]);
+      await evalScript<number>(
+        this.r,
+        'record-job-result',
+        [
+          this.ns,
+          job.id,
+          'failed',
+          String(finishedOn),
+          errorInfo,
+          String(this.keepCompleted),
+          String(this.keepFailed),
+          String(processedOn),
+          String(finishedOn),
+          String(attempts),
+          String(maxAttempts),
+        ],
+        1,
+      );
     } catch (err) {
       this.logger.error(
         `Error recording final failure for job ${job.id}:`,
@@ -1232,12 +1262,12 @@ export class Queue<T = any> {
     return this.r.zcard(`${this.ns}:failed`);
   }
   async heartbeat(job: { id: string; groupId: string }, extendMs = this.vt) {
-    return evalScript<number>(this.r, 'heartbeat', [
-      this.ns,
-      job.id,
-      job.groupId,
-      String(extendMs),
-    ]);
+    return evalScript<number>(
+      this.r,
+      'heartbeat',
+      [this.ns, job.id, job.groupId, String(extendMs)],
+      1,
+    );
   }
 
   /**
@@ -1266,7 +1296,7 @@ export class Queue<T = any> {
 
       // We have the lock, run cleanup
       const now = Date.now();
-      return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)]);
+      return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)], 1);
     } catch (_e) {
       return 0;
     }
@@ -1464,12 +1494,11 @@ export class Queue<T = any> {
   async reserveAtomic(groupId: string): Promise<ReservedJob<T> | null> {
     const now = Date.now();
 
-    const args = [this.ns, String(now), String(this.vt), String(groupId)];
-
     const result = await evalScript<string | null>(
       this.r,
       'reserve-atomic',
-      args,
+      [this.ns, String(now), String(this.vt), String(groupId)],
+      1,
     );
     if (!result) return null;
 
@@ -1515,6 +1544,7 @@ export class Queue<T = any> {
       this.r,
       'reserve-batch',
       [this.ns, String(now), String(this.vt), String(Math.max(1, maxBatch))],
+      1,
     );
     const out: Array<ReservedJob<T>> = [];
     for (const r of results || []) {
@@ -1541,56 +1571,56 @@ export class Queue<T = any> {
    * Get the number of jobs currently being processed (active jobs)
    */
   async getActiveCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-active-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-active-count', [this.ns], 1);
   }
 
   /**
    * Get the number of jobs waiting to be processed
    */
   async getWaitingCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-waiting-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-waiting-count', [this.ns], 1);
   }
 
   /**
    * Get the number of jobs delayed due to backoff
    */
   async getDelayedCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-delayed-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-delayed-count', [this.ns], 1);
   }
 
   /**
    * Get list of active job IDs
    */
   async getActiveJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-active-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-active-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of waiting job IDs
    */
   async getWaitingJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-waiting-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-waiting-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of delayed job IDs
    */
   async getDelayedJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-delayed-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-delayed-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of unique group IDs that have jobs
    */
   async getUniqueGroups(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-unique-groups', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-unique-groups', [this.ns], 1);
   }
 
   /**
    * Get count of unique groups that have jobs
    */
   async getUniqueGroupsCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-unique-groups-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-unique-groups-count', [this.ns], 1);
   }
 
   /**
@@ -1776,12 +1806,12 @@ export class Queue<T = any> {
     maxStalledCount: number,
   ): Promise<string[]> {
     try {
-      const results = await evalScript<string[]>(this.r, 'check-stalled', [
-        this.ns,
-        String(now),
-        String(gracePeriod),
-        String(maxStalledCount),
-      ]);
+      const results = await evalScript<string[]>(
+        this.r,
+        'check-stalled',
+        [this.ns, String(now), String(gracePeriod), String(maxStalledCount)],
+        1,
+      );
       return results || [];
     } catch (error) {
       this.logger.error('Error checking stalled jobs:', error);
@@ -1881,11 +1911,16 @@ export class Queue<T = any> {
       if (acquired === 'OK') {
         try {
           // Promote staged jobs
-          const promoted = await evalScript<number>(this.r, 'promote-staged', [
-            this.ns,
-            String(Date.now()),
-            String(100), // Limit per batch
-          ]);
+          const promoted = await evalScript<number>(
+            this.r,
+            'promote-staged',
+            [
+              this.ns,
+              String(Date.now()),
+              String(100), // Limit per batch
+            ],
+            1,
+          );
 
           if (promoted > 0) {
             this.logger.debug(`Promoted ${promoted} staged jobs`);
@@ -1986,7 +2021,12 @@ export class Queue<T = any> {
     while (Date.now() - startTime < timeoutMs) {
       try {
         // Single atomic Lua script checks all queue structures
-        const isEmpty = await evalScript<number>(this.r, 'is-empty', [this.ns]);
+        const isEmpty = await evalScript<number>(
+          this.r,
+          'is-empty',
+          [this.ns],
+          1,
+        );
 
         if (isEmpty === 1) {
           await sleep(0);
@@ -2051,6 +2091,7 @@ export class Queue<T = any> {
         this.r,
         'cleanup-poisoned-group',
         [this.ns, groupId, String(now)],
+        1,
       );
       if (result === 'poisoned') {
         this.logger.warn(`Removed poisoned group ${groupId} from ready queue`);
@@ -2112,10 +2153,12 @@ export class Queue<T = any> {
     let moved = 0;
     for (let i = 0; i < limit; i++) {
       try {
-        const n = await evalScript<number>(this.r, 'promote-delayed-one', [
-          this.ns,
-          String(now),
-        ]);
+        const n = await evalScript<number>(
+          this.r,
+          'promote-delayed-one',
+          [this.ns, String(now)],
+          1,
+        );
         if (!n || n <= 0) break;
         moved += n;
       } catch (_e) {
@@ -2181,16 +2224,21 @@ export class Queue<T = any> {
         await this.r.zadd(scheduleKey, nextRunTime, repeatKey);
 
         // Enqueue the instance
-        await evalScript<string>(this.r, 'enqueue', [
-          this.ns,
-          repeatJobData.groupId,
-          JSON.stringify(repeatJobData.data),
-          String(repeatJobData.maxAttempts ?? this.defaultMaxAttempts),
-          String(repeatJobData.orderMs ?? now),
-          String(0),
-          String(randomUUID()),
-          String(this.keepCompleted),
-        ]);
+        await evalScript<string>(
+          this.r,
+          'enqueue',
+          [
+            this.ns,
+            repeatJobData.groupId,
+            JSON.stringify(repeatJobData.data),
+            String(repeatJobData.maxAttempts ?? this.defaultMaxAttempts),
+            String(repeatJobData.orderMs ?? now),
+            String(0),
+            String(randomUUID()),
+            String(this.keepCompleted),
+          ],
+          1,
+        );
 
         processed++;
       } catch (error) {
@@ -2210,10 +2258,12 @@ export class Queue<T = any> {
    */
   async promoteDelayedJobs(): Promise<number> {
     try {
-      return await evalScript<number>(this.r, 'promote-delayed-jobs', [
-        this.ns,
-        String(Date.now()),
-      ]);
+      return await evalScript<number>(
+        this.r,
+        'promote-delayed-jobs',
+        [this.ns, String(Date.now())],
+        1,
+      );
     } catch (error) {
       this.logger.error(`Error promoting delayed jobs:`, error);
       return 0;
@@ -2227,12 +2277,12 @@ export class Queue<T = any> {
     const newDelayUntil = newDelay > 0 ? Date.now() + newDelay : 0;
 
     try {
-      const result = await evalScript<number>(this.r, 'change-delay', [
-        this.ns,
-        jobId,
-        String(newDelayUntil),
-        String(Date.now()),
-      ]);
+      const result = await evalScript<number>(
+        this.r,
+        'change-delay',
+        [this.ns, jobId, String(newDelayUntil), String(Date.now())],
+        1,
+      );
       return result === 1;
     } catch (error) {
       this.logger.error(`Error changing delay for job ${jobId}:`, error);
@@ -2252,10 +2302,12 @@ export class Queue<T = any> {
    */
   async remove(jobId: string): Promise<boolean> {
     try {
-      const result = await evalScript<number>(this.r, 'remove', [
-        this.ns,
-        jobId,
-      ]);
+      const result = await evalScript<number>(
+        this.r,
+        'remove',
+        [this.ns, jobId],
+        1,
+      );
       return result === 1;
     } catch (error) {
       this.logger.error(`Error removing job ${jobId}:`, error);
@@ -2276,14 +2328,21 @@ export class Queue<T = any> {
   ): Promise<number> {
     const graceAt = Date.now() - graceTimeMs;
     try {
-      const removed = await evalScript<number>(this.r, 'clean-status', [
-        this.ns,
-        status,
-        String(graceAt),
-        String(Math.max(0, limit)),
-      ]);
+      const removed = await evalScript<number>(
+        this.r,
+        'clean-status',
+        [
+          this.ns,
+          status,
+          String(graceAt),
+          String(Math.max(0, Math.min(limit, 100000))),
+        ],
+        1,
+      );
       return removed ?? 0;
     } catch (error) {
+      console.log('HERE?', error);
+
       this.logger.error(`Error cleaning ${status} jobs:`, error);
       return 0;
     }

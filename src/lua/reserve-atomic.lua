@@ -1,10 +1,10 @@
 -- Atomic reserve operation that checks lock and reserves in one operation
 -- argv: ns, nowEpochMs, vtMs, targetGroupId, allowedJobId (optional)
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
-local vt = tonumber(ARGV[3])
-local targetGroupId = ARGV[4]
-local allowedJobId = ARGV[5] -- If provided, allow reserve if lock matches this job ID
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
+local vt = tonumber(ARGV[2])
+local targetGroupId = ARGV[3]
+local allowedJobId = ARGV[4] -- If provided, allow reserve if lock matches this job ID
 
 local readyKey = ns .. ":ready"
 local gZ = ns .. ":g:" .. targetGroupId

@@ -1,8 +1,8 @@
 -- argv: ns, status, graceAtMs, limit
-local ns = ARGV[1]
-local status = ARGV[2]
-local graceAt = tonumber(ARGV[3]) or 0
-local limit = tonumber(ARGV[4]) or 1000
+local ns = KEYS[1]
+local status = ARGV[1]
+local graceAt = tonumber(ARGV[2]) or 0
+local limit = tonumber(ARGV[3]) or 1000
 
 local setKey = nil
 if status == 'completed' then

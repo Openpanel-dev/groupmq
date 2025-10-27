@@ -1,17 +1,17 @@
 -- Record job completion or failure with retention management
 -- argv: ns, jobId, status ('completed' | 'failed'), timestamp, result/error (JSON), 
 --       keepCompleted, keepFailed, processedOn, finishedOn, attempts, maxAttempts
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local status = ARGV[3]
-local timestamp = tonumber(ARGV[4])
-local resultOrError = ARGV[5]
-local keepCompleted = tonumber(ARGV[6])
-local keepFailed = tonumber(ARGV[7])
-local processedOn = ARGV[8]
-local finishedOn = ARGV[9]
-local attempts = ARGV[10]
-local maxAttempts = ARGV[11]
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local status = ARGV[2]
+local timestamp = tonumber(ARGV[3])
+local resultOrError = ARGV[4]
+local keepCompleted = tonumber(ARGV[5])
+local keepFailed = tonumber(ARGV[6])
+local processedOn = ARGV[7]
+local finishedOn = ARGV[8]
+local attempts = ARGV[9]
+local maxAttempts = ARGV[10]
 
 local jobKey = ns .. ":job:" .. jobId
 

@@ -1,8 +1,8 @@
 -- argv: ns, jobId, groupId, extendMs
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local gid = ARGV[3]
-local extendMs = tonumber(ARGV[4])
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local gid = ARGV[2]
+local extendMs = tonumber(ARGV[3])
 
 -- BullMQ-style: only extend processing deadline, no group lock
 local procKey = ns .. ":processing:" .. jobId

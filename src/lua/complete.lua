@@ -1,9 +1,9 @@
 -- Complete a job by removing from processing and unlocking the group
 -- Does NOT record job metadata - that's handled separately by record-job-result.lua
 -- argv: ns, jobId, groupId
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local gid = ARGV[3]
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local gid = ARGV[2]
 
 -- Remove from processing
 redis.call("DEL", ns .. ":processing:" .. jobId)

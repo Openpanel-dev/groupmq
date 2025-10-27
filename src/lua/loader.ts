@@ -78,7 +78,7 @@ export async function evalScript<T = any>(
   client: Redis,
   name: ScriptName,
   argv: Array<string>,
-  numKeys = 0,
+  numKeys: number,
 ): Promise<T> {
   const sha = await loadScript(client, name);
   return (client as any).evalsha(sha, numKeys, ...argv);

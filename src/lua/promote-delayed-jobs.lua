@@ -1,6 +1,6 @@
 -- argv: ns, now
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
 
 local delayedKey = ns .. ":delayed"
 local readyKey = ns .. ":ready"

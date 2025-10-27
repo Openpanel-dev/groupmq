@@ -1,20 +1,20 @@
 -- Complete a job with metadata and atomically reserve the next job from the same group
 -- argv: ns, completedJobId, groupId, status, timestamp, resultOrError, keepCompleted, keepFailed,
 --       processedOn, finishedOn, attempts, maxAttempts, now, vt
-local ns = ARGV[1]
-local completedJobId = ARGV[2]
-local gid = ARGV[3]
-local status = ARGV[4]
-local timestamp = tonumber(ARGV[5])
-local resultOrError = ARGV[6]
-local keepCompleted = tonumber(ARGV[7])
-local keepFailed = tonumber(ARGV[8])
-local processedOn = ARGV[9]
-local finishedOn = ARGV[10]
-local attempts = ARGV[11]
-local maxAttempts = ARGV[12]
-local now = tonumber(ARGV[13])
-local vt = tonumber(ARGV[14])
+local ns = KEYS[1]
+local completedJobId = ARGV[1]
+local gid = ARGV[2]
+local status = ARGV[3]
+local timestamp = tonumber(ARGV[4])
+local resultOrError = ARGV[5]
+local keepCompleted = tonumber(ARGV[6])
+local keepFailed = tonumber(ARGV[7])
+local processedOn = ARGV[8]
+local finishedOn = ARGV[9]
+local attempts = ARGV[10]
+local maxAttempts = ARGV[11]
+local now = tonumber(ARGV[12])
+local vt = tonumber(ARGV[13])
 
 -- Part 1: Atomically verify and mark completion (prevent duplicate processing)
 local jobKey = ns .. ":job:" .. completedJobId

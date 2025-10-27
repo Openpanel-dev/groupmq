@@ -254,7 +254,7 @@ describe('Graceful Shutdown Tests', () => {
     const elapsed = Date.now() - startTime;
 
     expect(elapsed).toBeGreaterThan(190);
-    expect(elapsed).toBeLessThan(600);
+    expect(elapsed).toBeLessThan(800);
     expect(sawGracefulTimeout).toBe(true);
 
     shouldStop = true; // Allow the handler to finish

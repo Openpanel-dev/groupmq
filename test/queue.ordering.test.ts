@@ -240,26 +240,26 @@ describe('Ordering with Staging Tests', () => {
     await queue.add({
       groupId: 'group-a',
       data: { id: 2 },
-      orderMs: 200,
+      orderMs: Date.now() + 200,
     });
 
     await queue.add({
       groupId: 'group-a',
       data: { id: 1 },
-      orderMs: 100,
+      orderMs: Date.now() + 100,
     });
 
     // Add jobs for group B in reverse order
     await queue.add({
       groupId: 'group-b',
       data: { id: 4 },
-      orderMs: 400,
+      orderMs: Date.now() + 400,
     });
 
     await queue.add({
       groupId: 'group-b',
       data: { id: 3 },
-      orderMs: 300,
+      orderMs: Date.now() + 300,
     });
 
     await completePromise;

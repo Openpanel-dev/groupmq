@@ -1,7 +1,7 @@
 -- argv: ns, groupId, now
-local ns = ARGV[1]
-local groupId = ARGV[2]
-local now = tonumber(ARGV[3])
+local ns = KEYS[1]
+local groupId = ARGV[1]
+local now = tonumber(ARGV[2])
 
 local readyKey = ns .. ":ready"
 local gZ = ns .. ":g:" .. groupId

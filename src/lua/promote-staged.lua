@@ -1,8 +1,8 @@
 -- Promote staged jobs that are now ready to be processed
 -- argv: ns, now, limit
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3]) or 100
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2]) or 100
 
 local stageKey = ns .. ":stage"
 local readyKey = ns .. ":ready"
