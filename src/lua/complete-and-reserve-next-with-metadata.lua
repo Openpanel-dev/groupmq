@@ -29,8 +29,6 @@ end
 redis.call("DEL", ns .. ":processing:" .. completedJobId)
 redis.call("ZREM", ns .. ":processing", completedJobId)
 
--- No counter operations - use ZCARD for counts
-
 -- Part 3: Record job metadata (completed or failed)
 
 if status == "completed" then
@@ -146,8 +144,6 @@ redis.call("HSET", procKey, "groupId", groupId, "deadlineAt", tostring(deadline)
 local processingKey = ns .. ":processing"
 redis.call("ZADD", processingKey, deadline, id)
 
--- No counter operations - use ZCARD for counts
-
 -- Mark next job as processing for accurate stalled detection
 redis.call("HSET", nextJobKey, "status", "processing")
 
@@ -158,4 +154,4 @@ if nextHead and #nextHead >= 2 then
   redis.call("ZADD", readyKey, nextScore, groupId)
 end
 
-return id .. "||DELIMITER||" .. groupId .. "||DELIMITER||" .. payload .. "||DELIMITER||" .. attempts .. "||DELIMITER||" .. maxAttempts .. "||DELIMITER||" .. seq .. "||DELIMITER||" .. enq .. "||DELIMITER||" .. orderMs .. "||DELIMITER||" .. score .. "||DELIMITER||" .. deadline
+return id .. "|||" .. groupId .. "|||" .. payload .. "|||" .. attempts .. "|||" .. maxAttempts .. "|||" .. seq .. "|||" .. enq .. "|||" .. orderMs .. "|||" .. score .. "|||" .. deadline

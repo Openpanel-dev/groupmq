@@ -30,8 +30,6 @@ end
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
--- No counter operations - use ZCARD for counts
-
 -- Check if this job is the active one and remove it (BullMQ-style)
 local groupActiveKey = ns .. ":g:" .. gid .. ":active"
 local activeJobId = redis.call("LINDEX", groupActiveKey, 0)

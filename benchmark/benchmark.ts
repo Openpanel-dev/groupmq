@@ -86,6 +86,41 @@ interface BenchmarkResult {
   avgCpuPercent: number;
   avgMemoryMB: number;
   settings: BenchmarkSettings;
+  redisStats?: RedisStats;
+}
+
+interface RedisStats {
+  commandstats: Record<string, CommandStat>;
+  slowlog: any[];
+  latency: any[];
+  info: {
+    used_memory: number;
+    used_memory_human: string;
+    used_memory_peak: number;
+    used_memory_peak_human: string;
+    total_commands_processed: number;
+    instantaneous_ops_per_sec: number;
+    total_net_input_bytes: number;
+    total_net_output_bytes: number;
+    keyspace_hits: number;
+    keyspace_misses: number;
+  };
+  summary: {
+    totalCalls: number;
+    totalUsec: number;
+    avgUsecPerCall: number;
+    commandCount: number;
+    topCommands: CommandStat[];
+  };
+}
+
+interface CommandStat {
+  command?: string;
+  calls: number;
+  usec: number;
+  usec_per_call: number;
+  rejected_calls: number;
+  failed_calls: number;
 }
 
 interface BenchmarkSettings {
@@ -134,6 +169,117 @@ function average(values: number[]): number {
   return values.length > 0
     ? values.reduce((a, b) => a + b, 0) / values.length
     : 0;
+}
+
+// Redis stats collection
+async function resetRedisStats(redis: Redis): Promise<void> {
+  await redis.config('RESETSTAT');
+  await redis.slowlog('RESET');
+}
+
+async function collectRedisStats(redis: Redis): Promise<RedisStats> {
+  // Get command stats
+  const infoCommandstats = await redis.info('commandstats');
+  const commandstats: Record<string, CommandStat> = {};
+
+  const lines = infoCommandstats.split('\n');
+  for (const line of lines) {
+    if (line.startsWith('cmdstat_')) {
+      const parts = line.split(':');
+      const command = parts[0].replace('cmdstat_', '');
+      const stats = parts[1];
+
+      const calls = parseInt(stats.match(/calls=(\d+)/)?.[1] || '0');
+      const usec = parseInt(stats.match(/usec=(\d+)/)?.[1] || '0');
+      const usec_per_call = parseFloat(
+        stats.match(/usec_per_call=([\d.]+)/)?.[1] || '0',
+      );
+      const rejected_calls = parseInt(
+        stats.match(/rejected_calls=(\d+)/)?.[1] || '0',
+      );
+      const failed_calls = parseInt(
+        stats.match(/failed_calls=(\d+)/)?.[1] || '0',
+      );
+
+      commandstats[command] = {
+        calls,
+        usec,
+        usec_per_call,
+        rejected_calls,
+        failed_calls,
+      };
+    }
+  }
+
+  // Get slowlog
+  const slowlog = (await redis.slowlog('GET', 100)) as any[];
+
+  // Get latency events
+  const latency: any[] = [];
+
+  // Get general info
+  const infoStats = await redis.info('stats');
+  const infoMemory = await redis.info('memory');
+
+  const parseInfoValue = (info: string, key: string): string => {
+    const match = info.match(new RegExp(`${key}:(.+)`));
+    return match ? match[1].trim() : '0';
+  };
+
+  const info = {
+    used_memory: parseInt(parseInfoValue(infoMemory, 'used_memory')),
+    used_memory_human: parseInfoValue(infoMemory, 'used_memory_human'),
+    used_memory_peak: parseInt(parseInfoValue(infoMemory, 'used_memory_peak')),
+    used_memory_peak_human: parseInfoValue(
+      infoMemory,
+      'used_memory_peak_human',
+    ),
+    total_commands_processed: parseInt(
+      parseInfoValue(infoStats, 'total_commands_processed'),
+    ),
+    instantaneous_ops_per_sec: parseInt(
+      parseInfoValue(infoStats, 'instantaneous_ops_per_sec'),
+    ),
+    total_net_input_bytes: parseInt(
+      parseInfoValue(infoStats, 'total_net_input_bytes'),
+    ),
+    total_net_output_bytes: parseInt(
+      parseInfoValue(infoStats, 'total_net_output_bytes'),
+    ),
+    keyspace_hits: parseInt(parseInfoValue(infoStats, 'keyspace_hits')),
+    keyspace_misses: parseInt(parseInfoValue(infoStats, 'keyspace_misses')),
+  };
+
+  // Calculate summary
+  const totalCalls = Object.values(commandstats).reduce(
+    (sum, stat) => sum + stat.calls,
+    0,
+  );
+  const totalUsec = Object.values(commandstats).reduce(
+    (sum, stat) => sum + stat.usec,
+    0,
+  );
+  const avgUsecPerCall = totalCalls > 0 ? totalUsec / totalCalls : 0;
+  const commandCount = Object.keys(commandstats).length;
+
+  const topCommands = Object.entries(commandstats)
+    .map(([command, stat]) => ({ command, ...stat }))
+    .sort((a, b) => b.calls - a.calls)
+    .slice(0, 10);
+
+  return {
+    commandstats,
+    slowlog,
+    latency,
+    info,
+    summary: {
+      totalCalls,
+      totalUsec,
+      avgUsecPerCall,
+      commandCount,
+      topCommands,
+    },
+  };
 }
 
 // System monitoring
@@ -201,6 +347,7 @@ abstract class QueueAdapter {
   abstract waitForCompletion(timeoutMs?: number): Promise<void>;
   abstract cleanup(): Promise<void>;
   abstract getCompletedJobs(): JobMetrics[];
+  abstract getRedisInstance(): Redis;
 }
 
 class BullMQAdapter extends QueueAdapter {
@@ -210,11 +357,9 @@ class BullMQAdapter extends QueueAdapter {
   private workerProcesses: any[] = [];
   private completedJobs: JobMetrics[] = [];
   private queueName: string;
-  private opts: BenchmarkOptions;
-  constructor(opts: BenchmarkOptions) {
+  constructor(_opts: BenchmarkOptions) {
     super();
     this.queueName = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    this.opts = opts;
   }
 
   async setup(): Promise<void> {
@@ -448,6 +593,10 @@ class BullMQAdapter extends QueueAdapter {
 
   getCompletedJobs(): JobMetrics[] {
     return this.completedJobs;
+  }
+
+  getRedisInstance(): Redis {
+    return this.redis;
   }
 }
 
@@ -704,6 +853,10 @@ class GroupMQAdapter extends QueueAdapter {
   getCompletedJobs(): JobMetrics[] {
     return this.completedJobs;
   }
+
+  getRedisInstance(): Redis {
+    return this.redis;
+  }
 }
 
 // Main benchmark function
@@ -724,6 +877,11 @@ async function runBenchmark(
   try {
     // Setup
     await adapter.setup();
+
+    // Reset Redis stats before benchmark
+    const redisInstance = adapter.getRedisInstance();
+    await resetRedisStats(redisInstance);
+
     monitor.start();
 
     const benchmarkStart = performance.now();
@@ -741,6 +899,9 @@ async function runBenchmark(
     const durationMs = benchmarkEnd - benchmarkStart;
 
     monitor.stop();
+
+    // Collect Redis stats after benchmark
+    const redisStats = await collectRedisStats(redisInstance);
 
     // Collect results
     const completedJobs = adapter.getCompletedJobs();
@@ -779,6 +940,7 @@ async function runBenchmark(
       peakMemoryMB: parseFloat(systemStats.peakMemory.toFixed(1)),
       avgCpuPercent: parseFloat(systemStats.avgCpu.toFixed(1)),
       avgMemoryMB: parseFloat(systemStats.avgMemory.toFixed(1)),
+      redisStats,
       settings: {
         mq: opts.mq,
         jobs: opts.jobs,
@@ -830,6 +992,21 @@ function displayResults(result: BenchmarkResult): void {
     `  Memory - Peak: ${result.peakMemoryMB}MB  Avg: ${result.avgMemoryMB}MB`,
   );
 
+  if (result.redisStats) {
+    console.log('\n🔴 REDIS STATS:');
+    console.log(`  Total Commands: ${result.redisStats.summary.totalCalls}`);
+    console.log(
+      `  Avg μs/call: ${result.redisStats.summary.avgUsecPerCall.toFixed(2)}`,
+    );
+    console.log(`  Command Types: ${result.redisStats.summary.commandCount}`);
+    console.log('\n  Top Commands:');
+    for (const cmd of result.redisStats.summary.topCommands.slice(0, 5)) {
+      console.log(
+        `    ${cmd.command?.padEnd(15)} - ${cmd.calls.toString().padStart(6)} calls (${cmd.usec_per_call.toFixed(2)} μs/call)`,
+      );
+    }
+  }
+
   console.log(`\n${'='.repeat(60)}`);
 }
 
@@ -868,6 +1045,16 @@ function saveResults(opts: BenchmarkOptions, result: BenchmarkResult): void {
   existing.push(result);
   fs.writeFileSync(outputPath, JSON.stringify(existing, null, 2));
   console.log(`💾 Results appended to: ${outputPath}`);
+
+  // Save Redis stats to separate file for easier analysis
+  if (result.redisStats) {
+    const redisStatsPath = outputPath.replace('.json', '_redis.json');
+    fs.writeFileSync(
+      redisStatsPath,
+      JSON.stringify(result.redisStats, null, 2),
+    );
+    console.log(`💾 Redis stats saved to: ${redisStatsPath}`);
+  }
 }
 
 // Run the benchmark

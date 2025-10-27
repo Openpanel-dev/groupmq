@@ -11,8 +11,6 @@ local maxAttempts = tonumber(redis.call("HGET", jobKey, "maxAttempts"))
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
--- No counter operations - use ZCARD for counts
-
 -- BullMQ-style: Remove from group active list
 local groupActiveKey = ns .. ":g:" .. gid .. ":active"
 redis.call("LREM", groupActiveKey, 1, jobId)

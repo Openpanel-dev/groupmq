@@ -54,17 +54,21 @@ if status == "completed" then
       local oldIds = redis.call("ZRANGE", completedKey, 0, toRemove - 1)
       if #oldIds > 0 then
         redis.call("ZREMRANGEBYRANK", completedKey, 0, toRemove - 1)
+        -- Batch delete old jobs and unique keys
+        local keysToDelete = {}
         for i = 1, #oldIds do
           local oldId = oldIds[i]
-          redis.call("DEL", ns .. ":job:" .. oldId)
-          redis.call("DEL", ns .. ":unique:" .. oldId)
+          table.insert(keysToDelete, ns .. ":job:" .. oldId)
+          table.insert(keysToDelete, ns .. ":unique:" .. oldId)
+        end
+        if #keysToDelete > 0 then
+          redis.call("DEL", unpack(keysToDelete))
         end
       end
     end
   else
-    -- keepCompleted == 0: Delete immediately
-    redis.call("DEL", jobKey)
-    redis.call("DEL", ns .. ":unique:" .. jobId)
+    -- keepCompleted == 0: Delete immediately (batch operation)
+    redis.call("DEL", jobKey, ns .. ":unique:" .. jobId)
   end
   
 elseif status == "failed" then
@@ -90,9 +94,8 @@ elseif status == "failed" then
     
     -- Note: No retention trimming for failed jobs (let clean() handle it)
   else
-    -- keepFailed == 0: Delete immediately
-    redis.call("DEL", jobKey)
-    redis.call("DEL", ns .. ":unique:" .. jobId)
+    -- keepFailed == 0: Delete immediately (batch operation)
+    redis.call("DEL", jobKey, ns .. ":unique:" .. jobId)
   end
 end
 

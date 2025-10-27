@@ -11,15 +11,28 @@ if redis.call("GET", ns .. ":paused") then
   return nil
 end
 
--- Check for expired jobs using processing timeline
+-- STALLED JOB RECOVERY WITH THROTTLING
+-- Check for stalled jobs periodically to avoid overhead in hot path
+-- This ensures stalled jobs are recovered even in high-load systems
+-- Check interval is adaptive: 1/4 of jobTimeout (to check 4x during visibility window), max 5s
 local processingKey = ns .. ":processing"
-local expiredJobs = redis.call("ZRANGEBYSCORE", processingKey, 0, now)
-for _, jobId in ipairs(expiredJobs) do
-  -- CRITICAL: Verify job is STILL in processing to avoid race conditions
-  -- If job was completed between our snapshot and now, don't re-add it
-  local stillInProcessing = redis.call("ZSCORE", processingKey, jobId)
+local stalledCheckKey = ns .. ":stalled:lastcheck"
+local lastCheck = tonumber(redis.call("GET", stalledCheckKey)) or 0
+local stalledCheckInterval = math.min(math.floor(vt / 4), 5000)
+
+local shouldCheckStalled = (now - lastCheck) >= stalledCheckInterval
+
+-- Get available groups
+local groups = redis.call("ZRANGE", readyKey, 0, scanLimit - 1, "WITHSCORES")
+
+-- Check for stalled jobs if: queue is empty OR it's time for periodic check
+if (not groups or #groups == 0) or shouldCheckStalled then
+  if shouldCheckStalled then
+    redis.call("SET", stalledCheckKey, tostring(now))
+  end
   
-  if stillInProcessing then
+  local expiredJobs = redis.call("ZRANGEBYSCORE", processingKey, 0, now)
+  for _, jobId in ipairs(expiredJobs) do
     local procKey = ns .. ":processing:" .. jobId
     local procData = redis.call("HMGET", procKey, "groupId", "deadlineAt")
     local gid = procData[1]
@@ -35,19 +48,19 @@ for _, jobId in ipairs(expiredJobs) do
           local headScore = tonumber(head[2])
           redis.call("ZADD", readyKey, headScore, gid)
         end
-        -- Remove from group active list (BullMQ-style)
-        local groupActiveKey = ns .. ":g:" .. gid .. ":active"
-        redis.call("LREM", groupActiveKey, 1, jobId)
+        redis.call("DEL", ns .. ":lock:" .. gid)
         redis.call("DEL", procKey)
         redis.call("ZREM", processingKey, jobId)
       end
     end
   end
-  -- If not still in processing, it was completed - don't re-add it!
+  
+  -- Refresh groups after recovery (only if we didn't have any before)
+  if not groups or #groups == 0 then
+    groups = redis.call("ZRANGE", readyKey, 0, scanLimit - 1, "WITHSCORES")
+  end
 end
 
--- Get available groups
-local groups = redis.call("ZRANGE", readyKey, 0, scanLimit - 1, "WITHSCORES")
 if not groups or #groups == 0 then
   return nil
 end
@@ -131,8 +144,6 @@ redis.call("HSET", procKey, "groupId", chosenGid, "deadlineAt", tostring(deadlin
 local processingKey2 = ns .. ":processing"
 redis.call("ZADD", processingKey2, deadline, id)
 
--- No counter operations - use ZCARD for counts
-
 local gZ = ns .. ":g:" .. chosenGid
 local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
 if nextHead and #nextHead >= 2 then
@@ -140,6 +151,6 @@ if nextHead and #nextHead >= 2 then
   redis.call("ZADD", readyKey, nextScore, chosenGid)
 end
 
-return id .. "||DELIMITER||" .. groupId .. "||DELIMITER||" .. payload .. "||DELIMITER||" .. attempts .. "||DELIMITER||" .. maxAttempts .. "||DELIMITER||" .. seq .. "||DELIMITER||" .. enq .. "||DELIMITER||" .. orderMs .. "||DELIMITER||" .. score .. "||DELIMITER||" .. deadline
+return id .. "|||" .. groupId .. "|||" .. payload .. "|||" .. attempts .. "|||" .. maxAttempts .. "|||" .. seq .. "|||" .. enq .. "|||" .. orderMs .. "|||" .. score .. "|||" .. deadline
 
 

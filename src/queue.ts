@@ -491,7 +491,7 @@ export class Queue<T = any> {
 
     if (!raw) return null;
 
-    const parts = raw.split('||DELIMITER||');
+    const parts = raw.split('|||');
     if (parts.length !== 10) return null;
 
     let data: T;
@@ -624,7 +624,7 @@ export class Queue<T = any> {
       }
 
       // Parse the result (same format as reserve methods)
-      const parts = result.split('||DELIMITER||');
+      const parts = result.split('|||');
       if (parts.length !== 10) {
         this.logger.error(
           'Queue completeAndReserveNextWithMetadata: unexpected result format:',
@@ -1112,15 +1112,22 @@ export class Queue<T = any> {
       return null;
     }
 
-    // First try immediate reserve (fast path)
-    const immediateJob = await this.reserve();
-    if (immediateJob) {
-      this.logger.debug(
-        `Immediate reserve successful (${Date.now() - startTime}ms)`,
-      );
-      // Reset consecutive empty reserves counter when we get a job via fast path
-      this._consecutiveEmptyReserves = 0;
-      return immediateJob;
+    // Fast path optimization: Skip immediate reserve if we recently had empty reserves
+    // This avoids wasteful Lua script calls when queue is idle
+    // After 3 consecutive empty reserves, go straight to blocking for better performance
+    const skipImmediateReserve = this._consecutiveEmptyReserves >= 3;
+
+    if (!skipImmediateReserve) {
+      // Fast path: try immediate reserve first (avoids blocking when jobs are available)
+      const immediateJob = await this.reserve();
+      if (immediateJob) {
+        this.logger.debug(
+          `Immediate reserve successful (${Date.now() - startTime}ms)`,
+        );
+        // Reset consecutive empty reserves counter when we get a job via fast path
+        this._consecutiveEmptyReserves = 0;
+        return immediateJob;
+      }
     }
 
     // Use BullMQ-style adaptive timeout with delayed job consideration
@@ -1232,7 +1239,7 @@ export class Queue<T = any> {
     if (!result) return null;
 
     // Parse the delimited string response (same format as regular reserve)
-    const parts = result.split('||DELIMITER||');
+    const parts = result.split('|||');
     if (parts.length < 10) return null;
 
     const [
@@ -1277,7 +1284,7 @@ export class Queue<T = any> {
     const out: Array<ReservedJob<T>> = [];
     for (const r of results || []) {
       if (!r) continue;
-      const parts = r.split('||DELIMITER||');
+      const parts = r.split('|||');
       if (parts.length !== 10) continue;
       out.push({
         id: parts[0],

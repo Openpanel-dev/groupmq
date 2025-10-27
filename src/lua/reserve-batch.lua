@@ -14,6 +14,46 @@ end
 
 local out = {}
 
+-- STALLED JOB RECOVERY WITH THROTTLING
+-- Check for stalled jobs periodically to avoid overhead in hot path
+-- This ensures stalled jobs are recovered even in high-load systems where ready queue is never empty
+-- Check interval is adaptive: 1/4 of jobTimeout (to check 4x during visibility window), max 5s
+local stalledCheckKey = ns .. ":stalled:lastcheck"
+local lastCheck = tonumber(redis.call("GET", stalledCheckKey)) or 0
+local stalledCheckInterval = math.min(math.floor(vt / 4), 5000)
+
+if (now - lastCheck) >= stalledCheckInterval then
+  -- Update last check timestamp
+  redis.call("SET", stalledCheckKey, tostring(now))
+  
+  -- Check for expired jobs and recover them
+  local expiredJobs = redis.call("ZRANGEBYSCORE", processingKey, 0, now)
+  if #expiredJobs > 0 then
+    for _, jobId in ipairs(expiredJobs) do
+      local procKey = ns .. ":processing:" .. jobId
+      local procData = redis.call("HMGET", procKey, "groupId", "deadlineAt")
+      local gid = procData[1]
+      local deadlineAt = tonumber(procData[2])
+      if gid and deadlineAt and now > deadlineAt then
+        local jobKey = ns .. ":job:" .. jobId
+        local jobScore = redis.call("HGET", jobKey, "score")
+        if jobScore then
+          local gZ = ns .. ":g:" .. gid
+          redis.call("ZADD", gZ, tonumber(jobScore), jobId)
+          local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+          if head and #head >= 2 then
+            local headScore = tonumber(head[2])
+            redis.call("ZADD", readyKey, headScore, gid)
+          end
+          redis.call("DEL", ns .. ":lock:" .. gid)
+          redis.call("DEL", procKey)
+          redis.call("ZREM", processingKey, jobId)
+        end
+      end
+    end
+  end
+end
+
 -- Pop up to maxBatch groups from ready set (lowest score first)
 local groups = redis.call("ZRANGE", readyKey, 0, maxBatch - 1, "WITHSCORES")
 if not groups or #groups == 0 then
@@ -69,8 +109,6 @@ for i = 1, #groups, 2 do
             redis.call("HSET", procKey, "groupId", gid, "deadlineAt", tostring(deadline))
             redis.call("ZADD", processingKey, deadline, id)
 
-            -- No counter operations - use ZCARD for counts
-
             -- Re-add group if there is a new head job (next oldest)
             local nextHead = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
             if nextHead and #nextHead >= 2 then
@@ -78,7 +116,7 @@ for i = 1, #groups, 2 do
               redis.call("ZADD", readyKey, nextScore, gid)
             end
 
-            table.insert(out, id .. "||DELIMITER||" .. groupId .. "||DELIMITER||" .. payload .. "||DELIMITER||" .. attempts .. "||DELIMITER||" .. maxAttempts .. "||DELIMITER||" .. seq .. "||DELIMITER||" .. enq .. "||DELIMITER||" .. orderMs .. "||DELIMITER||" .. score .. "||DELIMITER||" .. deadline)
+            table.insert(out, id .. "|||" .. groupId .. "|||" .. payload .. "|||" .. attempts .. "|||" .. maxAttempts .. "|||" .. seq .. "|||" .. enq .. "|||" .. orderMs .. "|||" .. score .. "|||" .. deadline)
             table.insert(processedGroups, gid)
           end
         end

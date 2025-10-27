@@ -192,15 +192,18 @@ export type WorkerOptions<T> = {
    * Maximum time in seconds to wait for new jobs when queue is empty.
    * Shorter timeouts make workers more responsive but use more Redis resources.
    *
-   * @default 2
-   * @example 1 // More responsive, higher Redis usage
-   * @example 5 // Less responsive, lower Redis usage
+   * @default 1
+   * @example 0.5 // Very responsive, higher Redis usage
+   * @example 2 // Less responsive, lower Redis usage
    *
    * **When to adjust:**
-   * - High job volume: Decrease (1-2s) for faster job pickup
-   * - Low job volume: Increase (3-5s) to reduce Redis overhead
-   * - Real-time requirements: Decrease for lower latency
-   * - Resource constraints: Increase to reduce Redis load
+   * - High job volume: Use 1s or less for faster job pickup
+   * - Low job volume: Increase (2-3s) to reduce Redis overhead
+   * - Real-time requirements: Decrease to 0.5-1s for lower latency
+   * - Resource constraints: Increase to 2-5s to reduce Redis load
+   *
+   * **Note:** The actual timeout is adaptive and can go as low as 1ms
+   * based on queue activity and delayed job schedules.
    */
   blockingTimeoutSec?: number;
 
@@ -359,7 +362,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     const defaultSchedulerMs = 1000; // 1 second for responsive job processing
     this.schedulerMs = opts.schedulerIntervalMs ?? defaultSchedulerMs;
 
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s to match BullMQ's drainDelay
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 1s default for responsive job pickup (adaptive logic can go lower)
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
@@ -535,8 +538,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             `Fetching job (call #${this.blockingStats.totalBlockingCalls}, queue: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
           );
 
-          // Try batch reserve first for better efficiency (when concurrency > 1)
-          if (this.concurrency > 1 && asyncFifoQueue.numTotal() === 0) {
+          // Try batch reserve first for better efficiency
+          // Use batch reserve even for concurrency=1 since it's more efficient than blocking+atomic
+          if (asyncFifoQueue.numTotal() === 0) {
             const batchSize = Math.min(this.concurrency, 8); // Cap at 8 for efficiency
             const batchJobs = await this.q.reserveBatch(batchSize);
 
