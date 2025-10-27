@@ -1,3 +1,10 @@
+## [1.1.0-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.2...v1.1.0-next.3) (2025-10-27)
+
+
+### Bug Fixes
+
+* poisoned groups ([4ff4c75](https://github.com/Openpanel-dev/groupmq/commit/4ff4c7571a75e7703fa3d28a059706d4eb671a7e))
+
 ## [1.1.0-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.1...v1.1.0-next.2) (2025-10-27)
 
 
