@@ -1,3 +1,10 @@
+## [1.1.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.5...v1.1.0-next.6) (2025-11-09)
+
+
+### Bug Fixes
+
+* concurrency ([b41a030](https://github.com/Openpanel-dev/groupmq/commit/b41a030dc36f3cd741944707e0dea4452efe3af1))
+
 ## [1.1.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.4...v1.1.0-next.5) (2025-10-27)
 
 
