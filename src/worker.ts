@@ -527,7 +527,13 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     while (!this.stopping || asyncFifoQueue.numTotal() > 0) {
       try {
         // Phase 1: Fetch jobs efficiently until we reach concurrency capacity
-        while (!this.stopping && asyncFifoQueue.numTotal() < this.concurrency) {
+        // CRITICAL: Use asyncFifoQueue.numTotal() for concurrency control (matches BullMQ pattern)
+        // The queue tracks all promises (both fetch and processing), so this is accurate
+        while (!this.stopping) {
+          if (asyncFifoQueue.numTotal() >= this.concurrency) {
+            break; // At capacity, exit fetch loop
+          }
+
           this.blockingStats.totalBlockingCalls++;
 
           // Prevent overflow: reset counter after 1 billion calls (keeps number manageable)
@@ -536,13 +542,17 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           }
 
           this.logger.debug(
-            `Fetching job (call #${this.blockingStats.totalBlockingCalls}, queue: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
+            `Fetching job (call #${this.blockingStats.totalBlockingCalls}, processing: ${this.jobsInProgress.size}/${this.concurrency}, queue: ${asyncFifoQueue.numTotal()} (queued: ${asyncFifoQueue.numQueued()}, pending: ${asyncFifoQueue.numPending()}), total: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
           );
 
           // Try batch reserve first for better efficiency
           // Use batch reserve even for concurrency=1 since it's more efficient than blocking+atomic
-          if (asyncFifoQueue.numTotal() === 0) {
-            const batchSize = Math.min(this.concurrency, 8); // Cap at 8 for efficiency
+          // But limit batch size to available concurrency capacity
+          // Only batch reserve when queue is empty (process existing jobs first)
+          const availableCapacity =
+            this.concurrency - asyncFifoQueue.numTotal();
+          if (availableCapacity > 0 && asyncFifoQueue.numTotal() === 0) {
+            const batchSize = Math.min(availableCapacity, 8); // Cap at 8 for efficiency
             const batchJobs = await this.q.reserveBatch(batchSize);
 
             if (batchJobs.length > 0) {
@@ -563,9 +573,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           // BullMQ-style: only perform blocking reserve when truly drained
           // Require 2 consecutive empty reserves before considering queue drained
           // This prevents false positives from worker competition while staying responsive
+          // Check both queued/pending jobs AND actively processing jobs
           const allowBlocking =
             this.blockingStats.consecutiveEmptyReserves >= 2 &&
-            asyncFifoQueue.numTotal() === 0;
+            asyncFifoQueue.numTotal() === 0 &&
+            this.jobsInProgress.size === 0;
 
           // Use a consistent blocking timeout - BullMQ style
           // Job completion resets consecutiveEmptyReserves to 0, ensuring fast pickup
@@ -611,7 +623,8 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             const backoffThreshold = this.concurrency >= 100 ? 5 : 3;
             if (
               this.blockingStats.consecutiveEmptyReserves > backoffThreshold &&
-              asyncFifoQueue.numTotal() === 0 // Critical: only backoff when nothing is processing
+              asyncFifoQueue.numTotal() === 0 && // No queued or pending jobs
+              this.jobsInProgress.size === 0 // Critical: only backoff when nothing is processing
             ) {
               // Adaptive backoff based on concurrency level
               const maxBackoff = this.concurrency >= 100 ? 2000 : 5000;
@@ -627,7 +640,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               // Only log backoff every 20th time to reduce spam
               if (this.blockingStats.consecutiveEmptyReserves % 20 === 0) {
                 this.logger.debug(
-                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves}, jobs in progress: ${asyncFifoQueue.numTotal()})`,
+                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves}, jobs in progress: ${this.jobsInProgress.size})`,
                 );
               }
 
@@ -636,18 +649,21 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
             // BullMQ-inspired: Break immediately when no jobs found and queue is idle
             // This prevents tight polling and allows backoff to work properly
-            if (asyncFifoQueue.numTotal() === 0) {
+            if (
+              asyncFifoQueue.numTotal() === 0 &&
+              this.jobsInProgress.size === 0
+            ) {
               break; // Fully idle - exit fetch loop
             }
 
-            // If we have jobs processing, also break to process them
-            if (asyncFifoQueue.numTotal() > 1) {
+            // If we have jobs queued/pending or processing, break to process them
+            if (asyncFifoQueue.numTotal() > 0 || this.jobsInProgress.size > 0) {
               break;
             }
           }
         }
 
-        // Phase 2: BullMQ-style - Fetch ONE job and process immediately
+        // Phase 2: BullMQ-style - Fetch jobs and process immediately
         // This is more responsive than batching, especially at high concurrency
         let job: ReservedJob<T> | void;
         do {
@@ -655,16 +671,24 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           job = fetchedJob ?? undefined;
         } while (!job && asyncFifoQueue.numQueued() > 0);
 
-        if (job) {
+        if (job && typeof job === 'object' && 'id' in job) {
+          // We fetched an actual job from the queue
           this.totalJobsProcessed++;
           this.logger.debug(
             `Processing job ${job.id} from group ${job.groupId} immediately`,
           );
 
           // Add processing promise immediately, don't wait for completion
+          // The promise resolves to void or a chained job
+          // When it resolves to a chained job, that job will be fetched from the queue
+          // and processed by this same worker (maintaining atomic chaining)
           const processingPromise = this.processJob(
             job,
-            () => asyncFifoQueue.numTotal() <= this.concurrency,
+            () => {
+              // Check if we have capacity for atomic chaining
+              // Use asyncFifoQueue.numTotal() to match BullMQ pattern
+              return asyncFifoQueue.numTotal() <= this.concurrency;
+            },
             this.jobsInProgress,
           );
 
@@ -751,16 +775,53 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     fetchNextCallback: () => boolean,
     jobsInProgress: Set<{ job: ReservedJob<T>; ts: number }>,
   ): Promise<void | ReservedJob<T>> {
-    const inProgressItem = { job, ts: Date.now() };
-    jobsInProgress.add(inProgressItem);
+    // Check if this job is already tracked (it's a chained job)
+    const existingItem = Array.from(jobsInProgress).find(
+      (item) => item.job.id === job.id,
+    );
+
+    let inProgressItem: { job: ReservedJob<T>; ts: number };
+    if (existingItem) {
+      // Chained job - already tracked, just update timestamp
+      existingItem.ts = Date.now();
+      inProgressItem = existingItem;
+    } else {
+      // New job - add to tracking
+      inProgressItem = { job, ts: Date.now() };
+      jobsInProgress.add(inProgressItem);
+    }
 
     try {
       const nextJob = await this.processSingleJob(job, fetchNextCallback);
-      // If processOne returns a chained job from atomic completion, return it
-      // so it can be added back to asyncFifoQueue
+
+      // If a chained job is returned from atomic completion:
+      // - It's already reserved in Redis (in processing set)
+      // - We need to track it in jobsInProgress BEFORE removing the original job
+      //   to maintain accurate concurrency tracking
+      // - This ensures totalInFlight calculation is correct
+      if (
+        nextJob &&
+        typeof nextJob === 'object' &&
+        'id' in nextJob &&
+        'groupId' in nextJob
+      ) {
+        // Add chained job to jobsInProgress before removing original
+        // This maintains accurate concurrency count during the transition
+        const chainedItem = { job: nextJob, ts: Date.now() };
+        jobsInProgress.add(chainedItem);
+        // Now remove original job - chained job takes its place
+        jobsInProgress.delete(inProgressItem);
+        return nextJob;
+      }
+
+      // No chained job - original job will be removed in finally block
       return nextJob;
     } finally {
-      jobsInProgress.delete(inProgressItem);
+      // Only remove if not already removed (i.e., no chained job replaced it)
+      // Also check if this is still the same item (in case it was a chained job that got replaced)
+      if (jobsInProgress.has(inProgressItem)) {
+        jobsInProgress.delete(inProgressItem);
+      }
     }
   }
 

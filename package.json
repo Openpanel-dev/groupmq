@@ -46,7 +46,7 @@
     "benchmark": "jiti benchmark/benchmark.ts",
     "benchmark:both": "pnpm benchmark --mq both --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "benchmark:both:empty": "pnpm benchmark --mq both --jobs 5000 --workers 4 --job-type empty --multi-process && pnpm format:fix -- benchmark/results",
-    "benchmark:groupmq": "pnpm benchmark --mq groupmq --jobs 5000 --workers 10 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
+    "benchmark:groupmq": "pnpm benchmark --mq groupmq --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "benchmark:groupmq:dragonfly": "pnpm benchmark --db dragonfly --mq groupmq --jobs 5000 --workers 10 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "benchmark:bullmq": "pnpm benchmark --mq bullmq --jobs 5000 --workers 4 --job-type cpu --multi-process && pnpm format:fix -- benchmark/results",
     "format": "biome format .",
