@@ -1,3 +1,128 @@
+## [1.1.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.5...v1.1.0-next.6) (2025-11-09)
+
+
+### Bug Fixes
+
+* concurrency ([b41a030](https://github.com/Openpanel-dev/groupmq/commit/b41a030dc36f3cd741944707e0dea4452efe3af1))
+
+## [1.1.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.4...v1.1.0-next.5) (2025-10-27)
+
+
+### Bug Fixes
+
+* add dragonfly bemchmark ([efd4cfa](https://github.com/Openpanel-dev/groupmq/commit/efd4cfa2b805de705ba83278edf912150a2e1029))
+* cleanup ([846802b](https://github.com/Openpanel-dev/groupmq/commit/846802b080fc61050ceb40352315f0a8bcda6dcb))
+* dragonfly compatibility ([7599356](https://github.com/Openpanel-dev/groupmq/commit/7599356c257ae82e34cc70cb0b7bde0ec2fe2d75))
+
+## [1.1.0-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.3...v1.1.0-next.4) (2025-10-27)
+
+
+### Bug Fixes
+
+* stalled issues during load ([51af9c1](https://github.com/Openpanel-dev/groupmq/commit/51af9c168f0eb982cca017974bf4dd622281d0e4))
+
+## [1.1.0-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.2...v1.1.0-next.3) (2025-10-27)
+
+
+### Bug Fixes
+
+* poisoned groups ([4ff4c75](https://github.com/Openpanel-dev/groupmq/commit/4ff4c7571a75e7703fa3d28a059706d4eb671a7e))
+
+## [1.1.0-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.1...v1.1.0-next.2) (2025-10-27)
+
+
+### Features
+
+* try auto batching! ([537faa3](https://github.com/Openpanel-dev/groupmq/commit/537faa3907e4954f789ce4017ec1dcac4f124d89))
+
+
+### Bug Fixes
+
+* minor improvements ([3c4d567](https://github.com/Openpanel-dev/groupmq/commit/3c4d567d9365513fe95c302db5a76c721c9bd95f))
+
+## [1.1.0-next.1](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.10...v1.1.0-next.1) (2025-10-26)
+
+
+### Features
+
+* ordering is back ([70f5310](https://github.com/Openpanel-dev/groupmq/commit/70f53109fc6b156545d4625b1e5fa0b3015a458f))
+
+
+### Bug Fixes
+
+* errors caused on high load ([61fda76](https://github.com/Openpanel-dev/groupmq/commit/61fda76f3dbc5ffabe94517eff3a03148adadb44))
+
+## [1.0.1-next.10](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.9...v1.0.1-next.10) (2025-10-26)
+
+
+### Bug Fixes
+
+* improve idle ([ea7f78e](https://github.com/Openpanel-dev/groupmq/commit/ea7f78e1e8774b0da238f21c3f003b78c067f260))
+
+## [1.0.1-next.9](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.8...v1.0.1-next.9) (2025-10-26)
+
+
+### Bug Fixes
+
+* still trying to figure out how to avoid stalled jobs when large concurrency ([baa542a](https://github.com/Openpanel-dev/groupmq/commit/baa542aeb7b9e4f9bc432b89e06faaa982449cba))
+
+## [1.0.1-next.8](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.7...v1.0.1-next.8) (2025-10-25)
+
+
+### Bug Fixes
+
+* refactor, cleanu, improve concurrency ([bd546a0](https://github.com/Openpanel-dev/groupmq/commit/bd546a06e764ae3dd533baebd6beecc4e6fd85cb))
+
+## [1.0.1-next.7](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.6...v1.0.1-next.7) (2025-10-25)
+
+
+### Bug Fixes
+
+* stalled ([64bb729](https://github.com/Openpanel-dev/groupmq/commit/64bb729fc463669018c9c3dfe532ec8411aacb87))
+
+## [1.0.1-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.5...v1.0.1-next.6) (2025-10-25)
+
+
+### Bug Fixes
+
+* test ([29ab6ca](https://github.com/Openpanel-dev/groupmq/commit/29ab6ca9e1801570f59383a23333a56b1032e09f))
+* validate lua before build ([64a7cf9](https://github.com/Openpanel-dev/groupmq/commit/64a7cf99d97017a00a76c180555de34c550f796e))
+
+## [1.0.1-next.5](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.4...v1.0.1-next.5) (2025-10-25)
+
+
+### Bug Fixes
+
+* remove ordering for now ([25ae9ce](https://github.com/Openpanel-dev/groupmq/commit/25ae9ce91312f8ec4789ce193cc2695acbae1bfe))
+
+## [1.0.1-next.4](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.3...v1.0.1-next.4) (2025-10-24)
+
+
+### Bug Fixes
+
+* revert in memory ordering ([0a9f178](https://github.com/Openpanel-dev/groupmq/commit/0a9f17876444eda7bb79453e6994f62f0b1186ec))
+
+## [1.0.1-next.3](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.2...v1.0.1-next.3) (2025-10-24)
+
+
+### Bug Fixes
+
+* potential issue with re-running jobs 3 ([6bf2d08](https://github.com/Openpanel-dev/groupmq/commit/6bf2d08d294c2ee8c7edacd5b61f16d730915337))
+
+## [1.0.1-next.2](https://github.com/Openpanel-dev/groupmq/compare/v1.0.1-next.1...v1.0.1-next.2) (2025-10-24)
+
+
+### Bug Fixes
+
+* potential issue with re-running jobs 2 ([bf24e34](https://github.com/Openpanel-dev/groupmq/commit/bf24e3490003f8482dd460326e50b3cefd481e2e))
+
+## [1.0.1-next.1](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0...v1.0.1-next.1) (2025-10-24)
+
+
+### Bug Fixes
+
+* potential issue with re-running jobs ([2242de0](https://github.com/Openpanel-dev/groupmq/commit/2242de0f70e26d1f98ab5491412a755b83269106))
+
 ## 1.0.0 (2025-10-09)
 
 

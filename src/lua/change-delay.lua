@@ -1,8 +1,8 @@
 -- argv: ns, jobId, newDelayUntil, now
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local newDelayUntil = tonumber(ARGV[3])
-local now = tonumber(ARGV[4])
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local newDelayUntil = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
 
 local jobKey = ns .. ":job:" .. jobId
 local delayedKey = ns .. ":delayed"
@@ -29,6 +29,7 @@ local inDelayed = redis.call("ZSCORE", delayedKey, jobId)
 
 if newDelayUntil > 0 and newDelayUntil > now then
   -- Job should be delayed
+  redis.call("HSET", jobKey, "status", "delayed")
   if inDelayed then
     -- Update existing delay
     redis.call("ZADD", delayedKey, newDelayUntil, jobId)
@@ -43,6 +44,7 @@ if newDelayUntil > 0 and newDelayUntil > now then
   end
 else
   -- Job should be ready immediately
+  redis.call("HSET", jobKey, "status", "waiting")
   if inDelayed then
     -- Remove from delayed
     redis.call("ZREM", delayedKey, jobId)

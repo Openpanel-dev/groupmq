@@ -29,7 +29,6 @@ describe('Worker Blocking Detection Tests', () => {
       redis: redis.duplicate(),
       namespace,
       jobTimeoutMs: 30000,
-      orderingMethod: 'none',
     });
   });
 

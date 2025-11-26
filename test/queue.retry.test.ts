@@ -34,6 +34,7 @@ describe('Retry Behavior Tests', () => {
     const worker = new Worker({
       queue: q,
       blockingTimeoutSec: 5,
+      backoff: () => 0,
       maxAttempts: 2,
       handler: async (_job) => {
         attemptCount++;
@@ -44,7 +45,7 @@ describe('Retry Behavior Tests', () => {
     worker.run();
 
     // Wait for all attempts to complete
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await q.waitForEmpty();
 
     // Should have tried exactly maxAttempts times
     expect(attemptCount).toBe(2);
@@ -146,7 +147,7 @@ describe('Retry Behavior Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await q.waitForEmpty();
 
     // Should process in order: 1, 2 (retry), 3
     expect(processed).toEqual([1, 2, 3]);
@@ -194,7 +195,7 @@ describe('Retry Behavior Tests', () => {
 
     worker.run();
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await q.waitForEmpty();
 
     // Filter out the failure tracking entries
     const actualProcessed = processed.filter(

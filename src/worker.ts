@@ -177,7 +177,7 @@ export type WorkerOptions<T> = {
    * Interval in milliseconds between scheduler operations.
    * Scheduler promotes delayed jobs and processes cron/repeating jobs.
    *
-   * @default Adaptive: min(5000ms, max(1000ms, schedulerBufferMs * 0.8)) with 1000ms minimum cap
+   * @default 5000 (5 seconds)
    * @example 1000 // For fast cron jobs (every minute or less)
    * @example 10000 // For slow cron jobs (hourly or daily)
    *
@@ -185,11 +185,6 @@ export type WorkerOptions<T> = {
    * - Fast cron jobs: Decrease (1000-2000ms) for sub-minute schedules
    * - Slow cron jobs: Increase (10000-60000ms) to reduce Redis overhead
    * - No cron jobs: Increase (5000-10000ms) since only delayed jobs are affected
-   * - Scheduler buffering (`orderingMethod: 'scheduler'`): Automatically adjusted to prevent ordering stalls
-   *
-   * **Important:** The scheduler interval is automatically capped at 80% of the scheduler buffer window
-   * (with a 1000ms minimum) to ensure buffered jobs are promoted promptly and don't cause
-   * ordering stalls, while preventing excessive Redis load from very frequent scheduler runs.
    */
   schedulerIntervalMs?: number;
 
@@ -197,31 +192,20 @@ export type WorkerOptions<T> = {
    * Maximum time in seconds to wait for new jobs when queue is empty.
    * Shorter timeouts make workers more responsive but use more Redis resources.
    *
-   * @default 2
-   * @example 1 // More responsive, higher Redis usage
-   * @example 5 // Less responsive, lower Redis usage
+   * @default 1
+   * @example 0.5 // Very responsive, higher Redis usage
+   * @example 2 // Less responsive, lower Redis usage
    *
    * **When to adjust:**
-   * - High job volume: Decrease (1-2s) for faster job pickup
-   * - Low job volume: Increase (3-5s) to reduce Redis overhead
-   * - Real-time requirements: Decrease for lower latency
-   * - Resource constraints: Increase to reduce Redis load
+   * - High job volume: Use 1s or less for faster job pickup
+   * - Low job volume: Increase (2-3s) to reduce Redis overhead
+   * - Real-time requirements: Decrease to 0.5-1s for lower latency
+   * - Resource constraints: Increase to 2-5s to reduce Redis load
+   *
+   * **Note:** The actual timeout is adaptive and can go as low as 1ms
+   * based on queue activity and delayed job schedules.
    */
   blockingTimeoutSec?: number;
-
-  /**
-   * Whether to use atomic completion for better performance and consistency.
-   * Atomic completion completes a job and reserves the next job from the same group in one operation.
-   *
-   * @default true
-   * @example false // Disable for debugging or compatibility
-   *
-   * **When to disable:**
-   * - Debugging: To isolate completion vs reservation issues
-   * - Compatibility: If you have custom completion logic
-   * - Single concurrency: Less benefit with concurrency=1
-   */
-  atomicCompletion?: boolean;
 
   /**
    * Logger configuration for worker operations and debugging.
@@ -324,7 +308,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private schedulerTimer?: NodeJS.Timeout;
   private schedulerMs: number;
   private blockingTimeoutSec: number;
-  private atomicCompletion: boolean;
   private concurrency: number;
   private blockingClient: import('ioredis').default | null = null;
 
@@ -338,7 +321,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private jobsInProgress = new Set<{ job: ReservedJob<T>; ts: number }>();
 
   // Blocking detection and monitoring
-  private lastJobPickupTime = 0;
+  private lastJobPickupTime = Date.now(); // Initialize to now so we start in "active" mode
   private totalJobsProcessed = 0;
   private blockingStats = {
     totalBlockingCalls: 0,
@@ -346,15 +329,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     lastActivityTime: Date.now(),
   };
   private emptyReserveBackoffMs = 0;
-  private stuckDetectionTimer?: NodeJS.Timeout;
+
   private redisCloseHandler?: () => void;
   private redisErrorHandler?: (error: Error) => void;
   private redisReadyHandler?: () => void;
   private runLoopPromise?: Promise<void>;
-
-  // Track when we started collecting for each group (for in-memory ordering)
-  // This ensures we wait the full grace period from when we FIRST picked up a job from the group
-  private groupCollectionStartTimes = new Map<string, number>();
 
   constructor(opts: WorkerOptions<T>) {
     super();
@@ -379,32 +358,35 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.enableCleanup = opts.enableCleanup ?? true;
     this.cleanupMs = opts.cleanupIntervalMs ?? 60_000; // 1 minutes for high-concurrency production
 
-    // Ensure scheduler runs more frequently than ordering delay to prevent stalls
-    // But only if scheduler buffering is meaningful (>= 100ms)
-    const defaultSchedulerMs = 5000; // 5 seconds for high-concurrency production
-    const minSchedulerMs = 1000; // Minimum 1 second to prevent excessive Redis load
-    const schedulerBufferMs = this.q.schedulerBufferMs || 0;
-    this.schedulerMs =
-      opts.schedulerIntervalMs ??
-      (schedulerBufferMs >= 100
-        ? Math.min(
-            defaultSchedulerMs,
-            Math.max(minSchedulerMs, schedulerBufferMs * 0.8),
-          )
-        : defaultSchedulerMs);
+    // Scheduler interval for delayed jobs and cron jobs
+    const defaultSchedulerMs = 1000; // 1 second for responsive job processing
+    this.schedulerMs = opts.schedulerIntervalMs ?? defaultSchedulerMs;
 
-    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 5s for high-concurrency production
+    this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 1s default for responsive job pickup (adaptive logic can go lower)
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
-    this.atomicCompletion = opts.atomicCompletion ?? true;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
 
     // Initialize stalled job detection settings
-    this.stalledInterval = opts.stalledInterval ?? 30000; // 30 seconds default (like BullMQ)
-    this.maxStalledCount = opts.maxStalledCount ?? 1; // Fail after 1 stall (like BullMQ)
-    this.stalledGracePeriod = opts.stalledGracePeriod ?? 0; // No grace period by default
+    // BullMQ-inspired: More conservative settings for high concurrency
+    this.stalledInterval =
+      opts.stalledInterval ?? (this.concurrency > 50 ? 60000 : 30000); // 60s for high concurrency, 30s otherwise
+    this.maxStalledCount =
+      opts.maxStalledCount ?? (this.concurrency > 50 ? 2 : 1); // Allow 2 stalls for high concurrency
+    // CRITICAL: Grace period must be >= heartbeat startup delay to prevent false positives
+    // Default 5s covers heartbeat startup (2s) + 1 heartbeat interval (2s) + network/load buffer (1s)
+    this.stalledGracePeriod = opts.stalledGracePeriod ?? 5000; // 5s grace for all configurations
 
     // Set up Redis connection event handlers
     this.setupRedisEventHandlers();
+
+    // Auto-start promoter if orderingDelayMs is configured
+    if (this.q.orderingDelayMs > 0) {
+      this.q.startPromoter().catch((err) => {
+        this.logger.error('Failed to start staging promoter:', err);
+      });
+    }
+
+    this.run();
   }
 
   get isClosed() {
@@ -447,6 +429,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   async run(): Promise<void> {
+    if (this.runLoopPromise) {
+      return this.runLoopPromise;
+    }
+
     // Store the run loop promise so close() can wait for it
     const runPromise = this._runLoop();
     this.runLoopPromise = runPromise;
@@ -527,13 +513,9 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
       }, this.addJitter(schedulerInterval));
     }
 
-    // Start stuck detection monitoring
-    this.startStuckDetection();
-
     // Start stalled job checker for automatic recovery
     this.startStalledChecker();
 
-    let blockUntil = 0;
     let connectionRetries = 0;
     const maxConnectionRetries = 10; // Allow more retries with exponential backoff
 
@@ -545,16 +527,32 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     while (!this.stopping || asyncFifoQueue.numTotal() > 0) {
       try {
         // Phase 1: Fetch jobs efficiently until we reach concurrency capacity
-        while (!this.stopping && asyncFifoQueue.numTotal() < this.concurrency) {
+        // CRITICAL: Use asyncFifoQueue.numTotal() for concurrency control (matches BullMQ pattern)
+        // The queue tracks all promises (both fetch and processing), so this is accurate
+        while (!this.stopping) {
+          if (asyncFifoQueue.numTotal() >= this.concurrency) {
+            break; // At capacity, exit fetch loop
+          }
+
           this.blockingStats.totalBlockingCalls++;
 
+          // Prevent overflow: reset counter after 1 billion calls (keeps number manageable)
+          if (this.blockingStats.totalBlockingCalls >= 1_000_000_000) {
+            this.blockingStats.totalBlockingCalls = 0;
+          }
+
           this.logger.debug(
-            `Fetching job (call #${this.blockingStats.totalBlockingCalls}, queue: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
+            `Fetching job (call #${this.blockingStats.totalBlockingCalls}, processing: ${this.jobsInProgress.size}/${this.concurrency}, queue: ${asyncFifoQueue.numTotal()} (queued: ${asyncFifoQueue.numQueued()}, pending: ${asyncFifoQueue.numPending()}), total: ${asyncFifoQueue.numTotal()}/${this.concurrency})...`,
           );
 
-          // Try batch reserve first for better efficiency (when concurrency > 1)
-          if (this.concurrency > 1 && asyncFifoQueue.numTotal() === 0) {
-            const batchSize = Math.min(this.concurrency, 8); // Cap at 8 for efficiency
+          // Try batch reserve first for better efficiency
+          // Use batch reserve even for concurrency=1 since it's more efficient than blocking+atomic
+          // But limit batch size to available concurrency capacity
+          // Only batch reserve when queue is empty (process existing jobs first)
+          const availableCapacity =
+            this.concurrency - asyncFifoQueue.numTotal();
+          if (availableCapacity > 0 && asyncFifoQueue.numTotal() === 0) {
+            const batchSize = Math.min(availableCapacity, 8); // Cap at 8 for efficiency
             const batchJobs = await this.q.reserveBatch(batchSize);
 
             if (batchJobs.length > 0) {
@@ -564,7 +562,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               }
               // Reset counters for successful batch
               connectionRetries = 0;
-              blockUntil = 0;
               this.lastJobPickupTime = Date.now();
               this.blockingStats.consecutiveEmptyReserves = 0;
               this.blockingStats.lastActivityTime = Date.now();
@@ -573,15 +570,26 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             }
           }
 
-          const fetchedJob = this.retryIfFailed(
-            () =>
-              this.q.reserveBlocking(
-                this.blockingTimeoutSec,
-                blockUntil,
+          // BullMQ-style: only perform blocking reserve when truly drained
+          // Require 2 consecutive empty reserves before considering queue drained
+          // This prevents false positives from worker competition while staying responsive
+          // Check both queued/pending jobs AND actively processing jobs
+          const allowBlocking =
+            this.blockingStats.consecutiveEmptyReserves >= 2 &&
+            asyncFifoQueue.numTotal() === 0 &&
+            this.jobsInProgress.size === 0;
+
+          // Use a consistent blocking timeout - BullMQ style
+          // Job completion resets consecutiveEmptyReserves to 0, ensuring fast pickup
+          const adaptiveTimeout = this.blockingTimeoutSec;
+
+          const fetchedJob = allowBlocking
+            ? this.q.reserveBlocking(
+                adaptiveTimeout,
+                undefined, // blockUntil removed (was always 0, dead code)
                 this.blockingClient ?? undefined,
-              ),
-            this.delay.bind(this),
-          );
+              )
+            : this.q.reserve();
 
           asyncFifoQueue.add(fetchedJob);
 
@@ -591,7 +599,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
           if (job) {
             // Reset connection retry count and empty reserves
             connectionRetries = 0;
-            blockUntil = 0;
             this.lastJobPickupTime = Date.now();
             this.blockingStats.consecutiveEmptyReserves = 0;
             this.blockingStats.lastActivityTime = Date.now();
@@ -601,100 +608,94 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               `Fetched job ${job.id} from group ${job.groupId}`,
             );
           } else {
-            // No more jobs available
+            // No more jobs available - increment counter
             this.blockingStats.consecutiveEmptyReserves++;
 
-            // Only log every 50th empty reserve to reduce spam, or on important milestones
-            if (
-              this.blockingStats.consecutiveEmptyReserves % 50 === 0 ||
-              this.blockingStats.consecutiveEmptyReserves % 100 === 0
-            ) {
+            // Only log every 50th empty reserve to reduce spam
+            if (this.blockingStats.consecutiveEmptyReserves % 50 === 0) {
               this.logger.debug(
                 `No job available (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
               );
             }
 
-            // Log warning if too many consecutive empty reserves
+            // Only apply exponential backoff when queue is truly empty (no jobs processing)
+            // This prevents slowdown during the tail end when a few jobs are still processing
+            const backoffThreshold = this.concurrency >= 100 ? 5 : 3;
             if (
-              this.blockingStats.consecutiveEmptyReserves % 100 === 0 &&
-              this.shouldWarnAboutEmptyReserves()
+              this.blockingStats.consecutiveEmptyReserves > backoffThreshold &&
+              asyncFifoQueue.numTotal() === 0 && // No queued or pending jobs
+              this.jobsInProgress.size === 0 // Critical: only backoff when nothing is processing
             ) {
-              this.logger.warn(
-                `Has had ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves - potential blocking issue!`,
-              );
-              await this.logWorkerStatus();
-            }
-
-            // Recovery for delayed groups
-            try {
-              const recovered = await this.q.recoverDelayedGroups();
-              if (recovered > 0) {
-                this.logger.debug(`Recovered ${recovered} delayed groups`);
-              }
-            } catch (err) {
-              this.logger.warn(`Recovery error:`, err);
-            }
-
-            // Exponential backoff when no jobs are available to prevent tight polling
-            // Start backoff after just 3 consecutive empty reserves (more aggressive than before)
-            if (this.blockingStats.consecutiveEmptyReserves > 3) {
-              // More aggressive backoff for high-concurrency: start at 100ms, grow faster, cap at 5000ms
+              // Adaptive backoff based on concurrency level
+              const maxBackoff = this.concurrency >= 100 ? 2000 : 5000;
               if (this.emptyReserveBackoffMs === 0) {
-                this.emptyReserveBackoffMs = 100; // Start at 100ms for high concurrency
+                this.emptyReserveBackoffMs = this.concurrency >= 100 ? 100 : 50;
               } else {
                 this.emptyReserveBackoffMs = Math.min(
-                  5000, // Cap at 5 seconds for high concurrency
-                  Math.max(100, this.emptyReserveBackoffMs * 1.5), // Grow by 50% each time
+                  maxBackoff,
+                  Math.max(100, this.emptyReserveBackoffMs * 1.2),
                 );
               }
 
               // Only log backoff every 20th time to reduce spam
               if (this.blockingStats.consecutiveEmptyReserves % 20 === 0) {
                 this.logger.debug(
-                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms before next reserve attempt (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves})`,
+                  `Applying backoff: ${Math.round(this.emptyReserveBackoffMs)}ms (consecutive empty: ${this.blockingStats.consecutiveEmptyReserves}, jobs in progress: ${this.jobsInProgress.size})`,
                 );
               }
 
               await this.delay(this.emptyReserveBackoffMs);
             }
 
-            // No more jobs, break fetch loop if we have jobs processing
-            if (asyncFifoQueue.numTotal() > 1) {
+            // BullMQ-inspired: Break immediately when no jobs found and queue is idle
+            // This prevents tight polling and allows backoff to work properly
+            if (
+              asyncFifoQueue.numTotal() === 0 &&
+              this.jobsInProgress.size === 0
+            ) {
+              break; // Fully idle - exit fetch loop
+            }
+
+            // If we have jobs queued/pending or processing, break to process them
+            if (asyncFifoQueue.numTotal() > 0 || this.jobsInProgress.size > 0) {
               break;
             }
           }
-
-          // Break if blockUntil is set to avoid waiting during processing
-          if (blockUntil) {
-            break;
-          }
         }
 
-        // Phase 2: Wait for a job to become available from the queue
-        let job: ReservedJob<T> | void | null;
+        // Phase 2: BullMQ-style - Fetch jobs and process immediately
+        // This is more responsive than batching, especially at high concurrency
+        let job: ReservedJob<T> | void;
         do {
-          job = await asyncFifoQueue.fetch();
+          const fetchedJob = await asyncFifoQueue.fetch();
+          job = fetchedJob ?? undefined;
         } while (!job && asyncFifoQueue.numQueued() > 0);
 
-        if (job) {
+        if (job && typeof job === 'object' && 'id' in job) {
+          // We fetched an actual job from the queue
           this.totalJobsProcessed++;
+          this.logger.debug(
+            `Processing job ${job.id} from group ${job.groupId} immediately`,
+          );
 
-          // Process the job (may return chained job from atomic completion)
-          const processingPromise = this.retryIfFailed(
-            () =>
-              this.processJob(
-                job!,
-                () => asyncFifoQueue.numTotal() <= this.concurrency,
-                this.jobsInProgress,
-              ),
-            this.delay.bind(this),
-          ).then((chainedJob) => {
-            // If atomic completion returned a chained job, return it as the result
-            return chainedJob;
-          });
+          // Add processing promise immediately, don't wait for completion
+          // The promise resolves to void or a chained job
+          // When it resolves to a chained job, that job will be fetched from the queue
+          // and processed by this same worker (maintaining atomic chaining)
+          const processingPromise = this.processJob(
+            job,
+            () => {
+              // Check if we have capacity for atomic chaining
+              // Use asyncFifoQueue.numTotal() to match BullMQ pattern
+              return asyncFifoQueue.numTotal() <= this.concurrency;
+            },
+            this.jobsInProgress,
+          );
 
           asyncFifoQueue.add(processingPromise);
         }
+        // Note: No delay here - just loop back to Phase 1 immediately
+        // The adaptive timeout in Phase 1's blocking reserve handles idle efficiently
       } catch (err) {
         if (this.stopping) {
           return;
@@ -765,19 +766,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async retryIfFailed<T>(
-    fn: () => Promise<T>,
-    delayFn: (ms: number) => Promise<void>,
-  ): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      // Don't emit here - let AsyncFifoQueue handle it with ignoreErrors
-      // The error will be logged at a higher level if needed
-      throw err;
-    }
-  }
-
   /**
    * Process a job and return the next job if atomic completion succeeds
    * This matches BullMQ's processJob signature
@@ -787,16 +775,53 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     fetchNextCallback: () => boolean,
     jobsInProgress: Set<{ job: ReservedJob<T>; ts: number }>,
   ): Promise<void | ReservedJob<T>> {
-    const inProgressItem = { job, ts: Date.now() };
-    jobsInProgress.add(inProgressItem);
+    // Check if this job is already tracked (it's a chained job)
+    const existingItem = Array.from(jobsInProgress).find(
+      (item) => item.job.id === job.id,
+    );
+
+    let inProgressItem: { job: ReservedJob<T>; ts: number };
+    if (existingItem) {
+      // Chained job - already tracked, just update timestamp
+      existingItem.ts = Date.now();
+      inProgressItem = existingItem;
+    } else {
+      // New job - add to tracking
+      inProgressItem = { job, ts: Date.now() };
+      jobsInProgress.add(inProgressItem);
+    }
 
     try {
-      const nextJob = await this.processOne(job, fetchNextCallback);
-      // If processOne returns a chained job from atomic completion, return it
-      // so it can be added back to asyncFifoQueue
+      const nextJob = await this.processSingleJob(job, fetchNextCallback);
+
+      // If a chained job is returned from atomic completion:
+      // - It's already reserved in Redis (in processing set)
+      // - We need to track it in jobsInProgress BEFORE removing the original job
+      //   to maintain accurate concurrency tracking
+      // - This ensures totalInFlight calculation is correct
+      if (
+        nextJob &&
+        typeof nextJob === 'object' &&
+        'id' in nextJob &&
+        'groupId' in nextJob
+      ) {
+        // Add chained job to jobsInProgress before removing original
+        // This maintains accurate concurrency count during the transition
+        const chainedItem = { job: nextJob, ts: Date.now() };
+        jobsInProgress.add(chainedItem);
+        // Now remove original job - chained job takes its place
+        jobsInProgress.delete(inProgressItem);
+        return nextJob;
+      }
+
+      // No chained job - original job will be removed in finally block
       return nextJob;
     } finally {
-      jobsInProgress.delete(inProgressItem);
+      // Only remove if not already removed (i.e., no chained job replaced it)
+      // Also check if this is still the same item (in case it was a chained job that got replaced)
+      if (jobsInProgress.has(inProgressItem)) {
+        jobsInProgress.delete(inProgressItem);
+      }
     }
   }
 
@@ -810,7 +835,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     processedOn?: number,
     finishedOn?: number,
   ): Promise<ReservedJob<T> | undefined> {
-    if (this.atomicCompletion && fetchNextCallback?.()) {
+    if (fetchNextCallback?.()) {
       // Try atomic completion with next job reservation
       const nextJob = await this.q.completeAndReserveNextWithMetadata(
         job.id,
@@ -829,6 +854,22 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         );
         return nextJob;
       }
+      // Atomic chaining failed - one of these scenarios:
+      // 1. Job was already completed/recovered (early return from Lua script)
+      // 2. Job was completed but no next job to chain (group empty, ordering delay, or not at active list head)
+      // In both cases, the job is properly completed and group is unlocked. No action needed.
+      this.logger.debug(
+        `Atomic chaining returned nil for job ${job.id} - job completed, but no next job chained`,
+      );
+
+      // CRITICAL: For high concurrency, add a small delay to prevent thundering herd
+      // This reduces the chance of multiple workers hitting the same race condition
+      if (Math.random() < 0.1) {
+        // 10% chance
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.random() * 100),
+        );
+      }
     } else {
       // Use completeWithMetadata for atomic completion with metadata
       await this.q.completeWithMetadata(job, handlerResult, {
@@ -840,15 +881,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     }
 
     return undefined;
-  }
-
-  /**
-   * Start monitoring for stuck worker conditions
-   */
-  private startStuckDetection(): void {
-    this.stuckDetectionTimer = setInterval(async () => {
-      await this.checkForStuckConditions();
-    }, 30000); // Check every 30 seconds
   }
 
   /**
@@ -914,107 +946,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   }
 
   /**
-   * Determine if we should warn about empty reserves based on context
-   */
-  private shouldWarnAboutEmptyReserves(): boolean {
-    // Don't warn if stopping
-    if (this.stopping || this.closed) return false;
-
-    // Don't warn if we haven't processed any jobs (could be intentionally empty queue)
-    if (this.totalJobsProcessed === 0) return false;
-
-    // Don't warn if it's been more than 30 seconds since last job (likely normal completion)
-    const timeSinceLastJob =
-      this.lastJobPickupTime > 0
-        ? Date.now() - this.lastJobPickupTime
-        : Date.now();
-    if (timeSinceLastJob > 30000) return false;
-
-    // Warn if we've processed jobs recently but are now seeing many empty reserves
-    return true;
-  }
-
-  /**
-   * Check if worker appears to be stuck
-   */
-  private async checkForStuckConditions(): Promise<void> {
-    if (this.stopping || this.closed) return;
-
-    const now = Date.now();
-    const timeSinceLastActivity = now - this.blockingStats.lastActivityTime;
-    const timeSinceLastJob =
-      this.lastJobPickupTime > 0 ? now - this.lastJobPickupTime : now;
-
-    // Check for stuck conditions
-    if (timeSinceLastActivity > 60000) {
-      // 1 minute without any activity
-      this.logger.warn(
-        `STUCK WORKER ALERT: No activity for ${Math.round(timeSinceLastActivity / 1000)}s`,
-      );
-      await this.logWorkerStatus();
-    }
-
-    if (
-      this.blockingStats.consecutiveEmptyReserves > 50 &&
-      this.shouldWarnAboutEmptyReserves()
-    ) {
-      // Too many empty reserves (but queue might have jobs)
-      this.logger.warn(
-        `BLOCKING ALERT: ${this.blockingStats.consecutiveEmptyReserves} consecutive empty reserves`,
-      );
-      await this.logWorkerStatus();
-    }
-
-    if (timeSinceLastJob > 120000 && this.totalJobsProcessed > 0) {
-      // 2 minutes since last job (but has processed jobs before)
-      this.logger.warn(
-        `JOB STARVATION ALERT: No jobs for ${Math.round(timeSinceLastJob / 1000)}s`,
-      );
-      await this.logWorkerStatus();
-    }
-  }
-
-  /**
-   * Log comprehensive worker status for debugging
-   */
-  private async logWorkerStatus(): Promise<void> {
-    try {
-      const now = Date.now();
-      const [queueStats, uniqueGroupsCount] = await Promise.all([
-        this.q.getJobCounts(),
-        this.q.getUniqueGroups(),
-      ]);
-
-      this.logger.info(`📊 Status Report:`);
-      this.logger.info(`  🔢 Jobs Processed: ${this.totalJobsProcessed}`);
-      this.logger.info(
-        `  ⏱️ Last Job: ${this.lastJobPickupTime > 0 ? Math.round((now - this.lastJobPickupTime) / 1000) : 'never'}s ago`,
-      );
-      this.logger.info(
-        `  🚫 Consecutive Empty Reserves: ${this.blockingStats.consecutiveEmptyReserves}`,
-      );
-      this.logger.info(
-        `  📞 Total Blocking Calls: ${this.blockingStats.totalBlockingCalls}`,
-      );
-      this.logger.info(
-        `  📈 Queue Stats: Active=${queueStats.active}, Waiting=${queueStats.waiting}, Delayed=${queueStats.delayed}, Groups=${uniqueGroupsCount}`,
-      );
-      this.logger.info(
-        `  🔄 Currently Processing: ${this.jobsInProgress.size} jobs`,
-      );
-      if (this.jobsInProgress.size > 0) {
-        const jobDetails = Array.from(this.jobsInProgress).map((item) => {
-          const processingTime = now - item.ts;
-          return `${item.job.id} (${Math.round(processingTime / 1000)}s)`;
-        });
-        this.logger.info(`  📋 Processing: ${jobDetails.join(', ')}`);
-      }
-    } catch (err) {
-      this.logger.error(`Failed to log worker status:`, err);
-    }
-  }
-
-  /**
    * Get worker performance metrics
    */
   getWorkerMetrics() {
@@ -1052,10 +983,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
     if (this.schedulerTimer) {
       clearInterval(this.schedulerTimer);
-    }
-
-    if (this.stuckDetectionTimer) {
-      clearInterval(this.stuckDetectionTimer);
     }
 
     if (this.stalledCheckTimer) {
@@ -1194,202 +1121,6 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     return this.q.add(opts);
   }
 
-  /**
-   * Collect jobs from same group during grace period
-   *
-   * How it works:
-   * 1. Worker picks up first job and holds it in memory
-   * 2. Waits for the grace period to allow concurrent enqueue operations to finish
-   * 3. When new jobs are detected, reset the timer (with decay) and wait again
-   * 4. Repeat until no new jobs arrive for the full grace period
-   * 5. Process all collected jobs sorted by orderMs
-   *
-   * This solves the race condition where jobs are enqueued within 1-2ms:
-   * - Worker reserves job 1 while jobs 2-4 are still being written to Redis
-   * - By always waiting the grace period, we give concurrent writes time to complete
-   * - Then we collect all jobs that finished enqueueing during our wait
-   *
-   * NOTE: The grace window is measured from when WE picked up the job (Date.now()),
-   * NOT from when the job was enqueued. This is critical for handling concurrent enqueues.
-   */
-  private async collectJobsWithGrace(
-    firstJob: ReservedJob<T>,
-  ): Promise<ReservedJob<T>[]> {
-    const initialGraceMs = this.q.graceCollectionMs;
-
-    if (initialGraceMs <= 0) {
-      return [firstJob];
-    }
-
-    const groupId = firstJob.groupId;
-    const collected: ReservedJob<T>[] = [firstJob];
-    const now = Date.now();
-
-    // Check if we're already in a collection window for this group
-    let collectionStartTime = this.groupCollectionStartTimes.get(groupId);
-
-    if (!collectionStartTime) {
-      // First job from this group - start tracking the collection window
-      collectionStartTime = now;
-      this.groupCollectionStartTimes.set(groupId, collectionStartTime);
-
-      this.logger.debug(
-        `Started collection window for group ${groupId} (${initialGraceMs}ms grace period)`,
-      );
-    } else {
-      // We're continuing an existing collection for this group
-      // Check if we've already waited long enough
-      const elapsedSinceStart = now - collectionStartTime;
-      if (elapsedSinceStart >= initialGraceMs) {
-        this.logger.debug(
-          `Collection window for group ${groupId} already expired (${elapsedSinceStart}ms elapsed), processing immediately`,
-        );
-        return [firstJob];
-      }
-
-      this.logger.debug(
-        `Continuing collection for group ${groupId} (${elapsedSinceStart}ms elapsed)`,
-      );
-    }
-
-    let lastSeenCount = 0;
-    let lastJobArrivalTime = now; // Reset every time we detect new jobs
-    let currentGraceMs = initialGraceMs; // Decaying grace window
-    const minGraceMs = 20; // Minimum wait time
-    const decayFactor = this.q.orderingGracePeriodDecay;
-
-    // ALWAYS wait the grace period when we first pick up a job
-    // This gives concurrent enqueue operations time to finish writing to Redis
-    // The goal is to collect ALL jobs that exist at the END of the grace period
-
-    // Keep checking for NEW jobs until grace period expires with no new arrivals
-    while (Date.now() - lastJobArrivalTime < currentGraceMs) {
-      await this.delay(10); // Check every 10ms
-
-      const currentCount = await this.q.getGroupJobCount(groupId);
-
-      if (currentCount > lastSeenCount) {
-        // New jobs arrived! Reset the grace period timer with decay
-        const newJobsCount = currentCount - lastSeenCount;
-        lastSeenCount = currentCount;
-        lastJobArrivalTime = Date.now(); // RESET timer to when we detected new jobs
-
-        // Apply decay: reduce the grace window for the next iteration
-        currentGraceMs = Math.max(minGraceMs, currentGraceMs * decayFactor);
-
-        this.logger.debug(
-          `${newJobsCount} new job(s) detected in group ${groupId}, resetting grace period to ${Math.round(currentGraceMs)}ms (${Math.round((currentGraceMs / initialGraceMs) * 100)}% of original)`,
-        );
-      }
-
-      // Safety: don't wait forever (max multiplier from queue config)
-      const maxWaitMs = initialGraceMs * this.q.orderingMaxWaitMultiplier;
-      const totalWaitTime = Date.now() - collectionStartTime;
-      if (totalWaitTime > maxWaitMs) {
-        this.logger.warn(
-          `Grace period exceeded ${this.q.orderingMaxWaitMultiplier}x limit (${maxWaitMs}ms) for group ${groupId} (waited ${totalWaitTime}ms), proceeding`,
-        );
-        break;
-      }
-    }
-
-    // Collect ALL remaining jobs in the group (up to configured batch limit)
-    // These are the jobs that were there when the grace period ended
-    const finalCount = await this.q.getGroupJobCount(groupId);
-    const maxBatchSize = this.q.orderingMaxBatchSize;
-    const jobsToCollect = Math.min(finalCount, maxBatchSize);
-
-    this.logger.debug(
-      `Grace period complete for group ${groupId}, collecting ${jobsToCollect} of ${finalCount} remaining jobs (max batch: ${maxBatchSize})`,
-    );
-
-    // Collect remaining jobs from the group (up to max batch size)
-    for (let i = 0; i < jobsToCollect; i++) {
-      try {
-        // Reserve next job from this group, passing first job's ID to bypass lock
-        const nextJob = await this.reserveNextFromSameGroup(
-          groupId,
-          firstJob.id,
-        );
-        if (!nextJob) break;
-
-        collected.push(nextJob);
-      } catch (err) {
-        this.logger.warn(`Error collecting additional job: ${err}`);
-        break;
-      }
-    }
-
-    const oldCollected = collected.slice();
-
-    // Sort all collected jobs by orderMs
-    // Handle NaN values by treating them as 0 (or using timestamp as fallback)
-    collected.sort((a, b) => {
-      const aOrder = Number.isNaN(a.orderMs) ? a.timestamp : a.orderMs;
-      const bOrder = Number.isNaN(b.orderMs) ? b.timestamp : b.orderMs;
-      return aOrder - bOrder;
-    });
-
-    if (collected.length > 1) {
-      this.logger.info(
-        `Collected ${collected.length} jobs from group ${groupId} during ${Date.now() - now}ms grace period`,
-        {
-          unsorted: oldCollected.map((job) => job.id),
-          sorted: collected.map((job, index) => ({
-            jobId: job.id,
-            order: index,
-            groupId: job.groupId,
-            orderMs: job.orderMs,
-            timestamp: job.timestamp,
-          })),
-        },
-      );
-    }
-
-    // Clear the tracking for this group after we've collected the batch
-    // This allows the next batch to start fresh
-    this.groupCollectionStartTimes.delete(groupId);
-
-    return collected;
-  }
-
-  /**
-   * Reserve next job from same group (helper for grace collection)
-   *
-   * Passes the initial job ID to bypass the lock check, allowing us to
-   * reserve multiple jobs from the same group during grace collection.
-   */
-  private async reserveNextFromSameGroup(
-    groupId: string,
-    allowedJobId: string,
-  ): Promise<ReservedJob<T> | null> {
-    // Pass the initial job ID - if the lock matches, we can reserve
-    return await this.q.reserveAtomic(groupId, allowedJobId);
-  }
-
-  private async processOne(
-    job: ReservedJob<T>,
-    fetchNextCallback?: () => boolean,
-  ): Promise<void | ReservedJob<T>> {
-    // Collect jobs during grace period if enabled
-    const jobsToProcess = await this.collectJobsWithGrace(job);
-
-    // Process each job in order
-    let nextJob: ReservedJob<T> | undefined | void;
-    for (let i = 0; i < jobsToProcess.length; i++) {
-      const currentJob = jobsToProcess[i];
-      const isLastJob = i === jobsToProcess.length - 1;
-
-      nextJob = await this.processSingleJob(
-        currentJob,
-        isLastJob ? fetchNextCallback : undefined,
-      );
-    }
-
-    // Return the chained job from the last processed job (if any)
-    return nextJob;
-  }
-
   private async processSingleJob(
     job: ReservedJob<T>,
     fetchNextCallback?: () => boolean,
@@ -1400,14 +1131,18 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     let heartbeatDelayTimer: NodeJS.Timeout | undefined;
 
     const startHeartbeat = () => {
-      // Extend lock every jobTimeout/2 for more aggressive renewal
-      const minInterval = Math.max(
-        this.hbMs,
-        Math.floor((this.q.jobTimeoutMs || 30000) / 2),
+      // BullMQ-inspired: Adaptive heartbeat interval based on concurrency
+      // CRITICAL: Heartbeat must run frequently enough to prevent stalled detection
+      // Run every jobTimeout/3 (with max 10s) to ensure multiple heartbeats before timeout
+      const jobTimeout = this.q.jobTimeoutMs || 30000;
+      const minInterval = Math.min(
+        this.hbMs, // Use the worker's configured heartbeat interval
+        Math.floor(jobTimeout / 3), // At least 3 heartbeats within timeout window
+        10000, // Cap at 10s maximum
       );
 
       this.logger.debug(
-        `Starting heartbeat for job ${job.id} (interval: ${minInterval}ms)`,
+        `Starting heartbeat for job ${job.id} (interval: ${minInterval}ms, concurrency: ${this.concurrency})`,
       );
 
       hbTimer = setInterval(async () => {
@@ -1444,12 +1179,15 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     };
 
     try {
-      // Smart heartbeat: only start for jobs that might actually timeout
-      // Skip heartbeat for short jobs (< jobTimeoutMs / 3) to reduce Redis load
+      // BullMQ-inspired: Smart heartbeat with adaptive timing
+      // CRITICAL FIX: Start heartbeat much earlier to prevent false stalled detection
+      // Under high Redis load, jobs can be marked stalled before heartbeat even starts!
       const jobTimeout = this.q.jobTimeoutMs || 30000;
-      const heartbeatThreshold = jobTimeout / 3;
+      // Start heartbeat after 10% of timeout OR 2 seconds (whichever is smaller)
+      // This ensures heartbeat is active long before stalled detection can trigger
+      const heartbeatThreshold = Math.min(jobTimeout * 0.1, 2000);
 
-      // Start heartbeat after threshold delay for potentially long-running jobs
+      // Start heartbeat early for potentially long-running jobs
       heartbeatDelayTimer = setTimeout(() => {
         startHeartbeat();
       }, heartbeatThreshold);
@@ -1478,6 +1216,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
         jobStartWallTime,
         finishedAtWall,
       );
+
+      // Reset adaptive timeout after successful job completion
+      // This ensures the worker uses the low timeout (0.1s) for the next fetch
+      this.blockingStats.consecutiveEmptyReserves = 0;
+      this.emptyReserveBackoffMs = 0;
 
       // Emit completed event
       this.emit(
@@ -1513,6 +1256,11 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     jobStartWallTime: number,
   ): Promise<void> {
     this.onError?.(err, job);
+
+    // Reset adaptive timeout after job failure
+    // This ensures the worker uses the low timeout (0.1s) for the next fetch
+    this.blockingStats.consecutiveEmptyReserves = 0;
+    this.emptyReserveBackoffMs = 0;
 
     // Safely emit error event
     try {
@@ -1647,8 +1395,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 // Export a value with a generic constructor so T is inferred from opts.queue
 export type Worker<T = any> = _Worker<T>;
 type WorkerConstructor = new <T>(opts: WorkerOptions<T>) => _Worker<T>;
-export const Worker: WorkerConstructor =
-  _Worker as unknown as WorkerConstructor;
+export const Worker = _Worker as unknown as WorkerConstructor;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));

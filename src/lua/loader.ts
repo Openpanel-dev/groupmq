@@ -5,6 +5,7 @@ import type Redis from 'ioredis';
 
 export type ScriptName =
   | 'enqueue'
+  | 'enqueue-batch'
   | 'reserve'
   | 'reserve-batch'
   | 'reserve-atomic'
@@ -16,6 +17,7 @@ export type ScriptName =
   | 'cleanup'
   | 'promote-delayed-jobs'
   | 'promote-delayed-one'
+  | 'promote-staged'
   | 'change-delay'
   | 'get-active-count'
   | 'get-waiting-count'
@@ -25,8 +27,6 @@ export type ScriptName =
   | 'get-delayed-jobs'
   | 'get-unique-groups'
   | 'get-unique-groups-count'
-  | 'promote-buffered-groups'
-  | 'recover-delayed-groups'
   | 'cleanup-poisoned-group'
   | 'remove'
   | 'clean-status'
@@ -78,7 +78,7 @@ export async function evalScript<T = any>(
   client: Redis,
   name: ScriptName,
   argv: Array<string>,
-  numKeys = 0,
+  numKeys: number,
 ): Promise<T> {
   const sha = await loadScript(client, name);
   return (client as any).evalsha(sha, numKeys, ...argv);

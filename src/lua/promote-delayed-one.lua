@@ -1,6 +1,6 @@
 -- argv: ns, now
-local ns = ARGV[1]
-local now = tonumber(ARGV[2])
+local ns = KEYS[1]
+local now = tonumber(ARGV[1])
 
 local delayedKey = ns .. ":delayed"
 local readyKey = ns .. ":ready"
@@ -25,6 +25,10 @@ local groupId = redis.call("HGET", jobKey, "groupId")
 if not groupId then
   return 1 -- treat as moved even if metadata missing
 end
+
+-- Mark job as waiting (no longer delayed)
+redis.call("HSET", jobKey, "status", "waiting")
+redis.call("HDEL", jobKey, "runAt")
 
 local gZ = ns .. ":g:" .. groupId
 local head = redis.call("ZRANGE", gZ, 0, 0)

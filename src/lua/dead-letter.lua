@@ -1,7 +1,7 @@
 -- argv: ns, jobId, groupId
-local ns = ARGV[1]
-local jobId = ARGV[2]
-local groupId = ARGV[3]
+local ns = KEYS[1]
+local jobId = ARGV[1]
+local groupId = ARGV[2]
 local gZ = ns .. ":g:" .. groupId
 local readyKey = ns .. ":ready"
 
@@ -12,15 +12,14 @@ redis.call("ZREM", gZ, jobId)
 redis.call("DEL", ns .. ":processing:" .. jobId)
 redis.call("ZREM", ns .. ":processing", jobId)
 
+-- No counter operations - use ZCARD for counts
+
 -- Remove idempotence mapping to allow reuse
 redis.call("DEL", ns .. ":unique:" .. jobId)
 
--- Remove group lock if this job holds it
-local lockKey = ns .. ":lock:" .. groupId
-local lockValue = redis.call("GET", lockKey)
-if lockValue == jobId then
-  redis.call("DEL", lockKey)
-end
+-- BullMQ-style: Remove from group active list if present
+local groupActiveKey = ns .. ":g:" .. groupId .. ":active"
+redis.call("LREM", groupActiveKey, 1, jobId)
 
 -- Check if group is now empty or should be removed from ready queue
 local jobCount = redis.call("ZCARD", gZ)
@@ -28,6 +27,7 @@ if jobCount == 0 then
   -- Group is empty, remove from ready queue and clean up
   redis.call("ZREM", readyKey, groupId)
   redis.call("DEL", gZ)
+  redis.call("DEL", groupActiveKey)
   redis.call("SREM", ns .. ":groups", groupId)
 else
   -- Group still has jobs, update ready queue with new head

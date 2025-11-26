@@ -14,33 +14,44 @@ describe('Concurrency and Race Condition Tests', () => {
     await redis.quit();
   });
 
-  it('should handle multiple workers on same group without conflicts', async () => {
+  it('should handle multiple workers distributing across different groups with atomic completion', async () => {
     const redis = new Redis(REDIS_URL);
-    const q = new Queue({ redis, namespace: `${namespace}:multiworker` });
+    const q = new Queue({
+      redis,
+      namespace: `${namespace}:atomic-distribution`,
+    });
 
-    // Enqueue many jobs in same group
-    for (let i = 0; i < 40; i++) {
+    // Add 10 jobs to one group (should be processed by one worker)
+    for (let i = 0; i < 10; i++) {
       await q.add({
-        groupId: 'shared-group',
-        data: { id: i },
-        orderMs: i,
+        groupId: 'group-heavy', // Heavy group with 10 jobs
+        data: { id: i, group: 'heavy' },
       });
     }
 
-    const processed: number[] = [];
-    const workers: Worker<any>[] = [];
-    const processedBy: { [key: number]: number } = {}; // Track which worker processed each job
+    // Add 1 job to another group (should be processed by the other worker)
+    await q.add({
+      groupId: 'group-light', // Light group with 1 job
+      data: { id: 10, group: 'light' },
+    });
 
-    // Create multiple workers competing for same group
-    for (let workerId = 0; workerId < 3; workerId++) {
+    const processed: any[] = [];
+    const workers: Worker<any>[] = [];
+    const processedBy: { [key: number]: any[] } = {}; // Track which worker processed which jobs
+
+    // Create 2 workers
+    for (let workerId = 0; workerId < 2; workerId++) {
       const worker = new Worker({
         queue: q,
         blockingTimeoutSec: 1,
-        atomicCompletion: false,
-        concurrency: 8,
+        concurrency: 1, // Single concurrency to make chaining more obvious
         handler: async (job) => {
-          processed.push((job.data as any).id);
-          processedBy[(job.data as any).id] = workerId;
+          const jobData = job.data as any;
+          processed.push(jobData);
+          if (!processedBy[workerId]) processedBy[workerId] = [];
+          processedBy[workerId].push(jobData);
+
+          // Short processing time
           await new Promise((resolve) => setTimeout(resolve, 50));
         },
       });
@@ -52,22 +63,51 @@ describe('Concurrency and Race Condition Tests', () => {
     await q.waitForEmpty();
 
     // All jobs should be processed exactly once
-    expect(processed.length).toBe(40);
-    expect(new Set(processed).size).toBe(40); // No duplicates
+    expect(processed.length).toBe(11);
+    expect(new Set(processed.map((j) => j.id)).size).toBe(11); // No duplicates
 
-    // Jobs should be processed in FIFO order within the group
-    expect(processed).toEqual([...Array(40).keys()]);
+    // Verify atomic completion behavior:
+    // - One worker should process all 10 jobs from group-heavy
+    // - The other worker should process the 1 job from group-light
+    const heavyGroupJobs = processed.filter((j) => j.group === 'heavy');
+    const lightGroupJobs = processed.filter((j) => j.group === 'light');
 
-    // Jobs should be distributed among workers (not all by one worker)
-    const workerCounts = Object.values(processedBy).reduce(
-      (acc, workerId) => {
-        acc[workerId] = (acc[workerId] || 0) + 1;
-        return acc;
-      },
-      {} as { [key: number]: number },
+    expect(heavyGroupJobs.length).toBe(10);
+    expect(lightGroupJobs.length).toBe(1);
+
+    // Check that jobs within each group were processed by the same worker
+    const heavyWorkerIds = new Set(
+      heavyGroupJobs.map((j) => {
+        for (const [workerId, jobs] of Object.entries(processedBy)) {
+          if (jobs.some((job) => job.id === j.id)) return parseInt(workerId);
+        }
+        return -1;
+      }),
     );
 
-    expect(Object.keys(workerCounts).length).toBeGreaterThan(1);
+    const lightWorkerIds = new Set(
+      lightGroupJobs.map((j) => {
+        for (const [workerId, jobs] of Object.entries(processedBy)) {
+          if (jobs.some((job) => job.id === j.id)) return parseInt(workerId);
+        }
+        return -1;
+      }),
+    );
+
+    // Each group should be processed by exactly one worker
+    expect(heavyWorkerIds.size).toBe(1);
+    expect(lightWorkerIds.size).toBe(1);
+
+    // The workers should be different (distribution across groups)
+    expect(heavyWorkerIds).not.toEqual(lightWorkerIds);
+
+    // Verify that all 10 heavy jobs were processed by the same worker
+    const heavyWorkerId = Array.from(heavyWorkerIds)[0];
+    const heavyWorkerJobs = processedBy[heavyWorkerId] || [];
+    const heavyJobsByWorker = heavyWorkerJobs.filter(
+      (j) => j.group === 'heavy',
+    );
+    expect(heavyJobsByWorker.length).toBe(10);
 
     await Promise.all(workers.map((w) => w.close()));
     await redis.quit();

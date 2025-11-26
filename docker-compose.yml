@@ -1,0 +1,23 @@
+version: "3"
+
+services:
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    container_name: groupmq-dragonfly
+    restart: always
+    ports:
+      - "6385:6379"
+    ulimits:
+      memlock: -1 # recommended by Dragonfly
+      nofile: 65535
+    command:
+      - "--cluster_mode=emulated"
+      - "--lock_on_hashtags"
+
+  redis:
+    image: redis:7.2.5-alpine
+    container_name: groupmq-redis
+    restart: always
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    ports:
+      - 6384:6379

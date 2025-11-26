@@ -1,17 +1,19 @@
--- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, orderingDelayMs, clientTimestamp
-local ns = ARGV[1]
-local groupId = ARGV[2]
-local data = ARGV[3]
-local maxAttempts = tonumber(ARGV[4])
-local orderMs = tonumber(ARGV[5])
-local delayUntil = tonumber(ARGV[6])
-local jobId = ARGV[7]
-local keepCompleted = tonumber(ARGV[8]) or 0
+-- argv: ns, groupId, dataJson, maxAttempts, orderMs, delayUntil, jobId, keepCompleted, clientTimestamp, orderingDelayMs
+local ns = KEYS[1]
+local groupId = ARGV[1]
+local data = ARGV[2]
+local maxAttempts = tonumber(ARGV[3])
+local orderMs = tonumber(ARGV[4])
+local delayUntil = tonumber(ARGV[5])
+local jobId = ARGV[6]
+local keepCompleted = tonumber(ARGV[7]) or 0
+local clientTimestamp = tonumber(ARGV[8])
 local orderingDelayMs = tonumber(ARGV[9]) or 0
-local clientTimestamp = tonumber(ARGV[10])
 
 local readyKey = ns .. ":ready"
 local delayedKey = ns .. ":delayed"
+local stageKey = ns .. ":stage"
+local timerKey = ns .. ":stage:timer"
 local jobKey = ns .. ":job:" .. jobId
 local groupsKey = ns .. ":groups"
 
@@ -108,53 +110,40 @@ redis.call("HMSET", jobKey,
 -- Track group membership (idempotent)
 redis.call("SADD", groupsKey, groupId)
 
--- Add job to group's sorted set first
-redis.call("ZADD", gZ, score, jobId)
-
--- Determine job status for return value
+-- Determine job status and placement
 local jobStatus = "waiting"
 
 if delayUntil > 0 and delayUntil > now then
-  -- Job is delayed, add to delayed set
+  -- Job is delayed, add to delayed set and group set
+  redis.call("ZADD", gZ, score, jobId)
   redis.call("ZADD", delayedKey, delayUntil, jobId)
   jobStatus = "delayed"
+  redis.call("HSET", jobKey, "status", jobStatus)
+elseif orderMs and orderingDelayMs > 0 then
+  -- Job should be staged for ordering (orderMs provided and orderingDelayMs > 0)
+  -- NOTE: Do NOT add to group ZSET yet - only to staging
+  local releaseAt = orderMs + orderingDelayMs
+  redis.call("ZADD", stageKey, releaseAt, jobId)
+  jobStatus = "staged"
+  redis.call("HSET", jobKey, "status", jobStatus)
+  
+  -- Update/set timer to earliest staged job
+  local currentHead = redis.call("ZRANGE", stageKey, 0, 0, "WITHSCORES")
+  if currentHead and #currentHead >= 2 then
+    local headReleaseAt = tonumber(currentHead[2])
+    -- Set timer to expire when the earliest job is ready
+    local ttlMs = math.max(1, headReleaseAt - now)
+    redis.call("SET", timerKey, "1", "PX", ttlMs)
+  end
 else
-  -- Job is not delayed, determine if group should be ready or buffering
-  -- Only use buffering if orderingDelayMs is meaningful (>= 100ms)
-  -- Below 100ms, the overhead isn't worth it and sorted set ordering is sufficient
-  if orderingDelayMs >= 100 then
-    -- Check if group is currently locked (actively processing)
-    local lockKey = ns .. ":lock:" .. groupId
-    local isLocked = redis.call("EXISTS", lockKey)
-    
-    if isLocked == 1 then
-      -- Group is actively processing, don't buffer - the group will be re-added to ready
-      -- when the current job completes. The sorted set already maintains order.
-      -- Don't add to ready queue, let complete script handle it
-    else
-      -- Group is not processing, check if we should buffer
-      local groupBufferKey = ns .. ":buffer:" .. groupId
-      local bufferStartTime = redis.call("GET", groupBufferKey)
-      
-      if not bufferStartTime then
-        -- This is the first job arriving for an idle group
-        -- Start buffering window
-        redis.call("SET", groupBufferKey, tostring(now), "PX", orderingDelayMs + 1000)
-        
-        -- Add group to buffering set with score = when it should become ready
-        local readyAt = now + orderingDelayMs
-        redis.call("ZADD", ns .. ":buffering", readyAt, groupId)
-      end
-      -- If bufferStartTime exists, the group is already buffering - just accumulate jobs
-    end
-  else
-    -- No buffering or orderingDelayMs too small - rely on sorted set ordering
-    -- Make group ready immediately if this is the head job
-    local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
-    if head and #head >= 2 then
-      local headScore = tonumber(head[2])
-      redis.call("ZADD", readyKey, headScore, groupId)
-    end
+  -- Job is not delayed and not staged, add to group set and make ready
+  redis.call("ZADD", gZ, score, jobId)
+  jobStatus = "waiting"
+  redis.call("HSET", jobKey, "status", jobStatus)
+  local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")
+  if head and #head >= 2 then
+    local headScore = tonumber(head[2])
+    redis.call("ZADD", readyKey, headScore, groupId)
   end
 end
 

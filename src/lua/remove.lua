@@ -1,6 +1,6 @@
 -- argv: ns, jobId
-local ns = ARGV[1]
-local jobId = ARGV[2]
+local ns = KEYS[1]
+local jobId = ARGV[1]
 
 local jobKey = ns .. ":job:" .. jobId
 local delayedKey = ns .. ":delayed"

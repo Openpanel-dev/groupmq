@@ -1,24 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import CronParser from 'cron-parser';
 import type Redis from 'ioredis';
-import { Job as JobEntity } from './job';
+import { type Job, Job as JobEntity } from './job';
 import { Logger, type LoggerInterface } from './logger';
 import { evalScript } from './lua/loader';
 import type { Status } from './status';
 
 /**
- * Strategy for handling out-of-order job arrivals.
- *
- * - `'none'`: No ordering guarantee beyond sorted set (fastest, zero overhead)
- * - `'scheduler'`: Redis-based buffering with scheduler promotion (high throughput, large windows)
- * - `'in-memory'`: Worker-side collection with grace period (low latency, small windows)
- */
-export type OrderingMethod = 'none' | 'scheduler' | 'in-memory';
-
-/**
- * Configuration options for a GroupMQ Queue
- *
- * @template T The type of data stored in jobs
+ * Options for configuring a GroupMQ queue
  */
 export type QueueOptions = {
   /**
@@ -78,11 +67,11 @@ export type QueueOptions = {
    * @example 5 // Retry failed jobs up to 5 times
    * @example 1 // Fail fast with minimal retries
    *
-   * **When to adjust:**
-   * - Critical jobs: Increase (5-10) for more resilience
-   * - Non-critical jobs: Decrease (1-2) to fail faster
+   * **When to override:**
+   * - Critical jobs: Increase retries
+   * - Non-critical jobs: Decrease retries
+   * - Idempotent operations: Can safely retry more
    * - External API calls: Consider API reliability
-   * - Rate-limited services: Use lower values to avoid rate limit issues
    */
   maxAttempts?: number;
 
@@ -103,268 +92,105 @@ export type QueueOptions = {
   reserveScanLimit?: number;
 
   /**
-   * Strategy for handling out-of-order job arrivals within a group.
+   * Maximum number of completed jobs to retain for inspection.
+   * Jobs beyond this limit are automatically cleaned up.
    *
-   * @default 'none'
-   *
-   * ## Ordering Methods
-   *
-   * ### `'none'` - No Ordering Guarantees (Fastest)
-   *
-   * Jobs are processed immediately in their `orderMs` sequence as maintained by the sorted set.
-   * No additional ordering mechanism is applied.
-   *
-   * **Use when:**
-   * - Jobs always arrive in order
-   * - Order doesn't matter for your use case
-   * - Maximum throughput is priority
-   *
-   * **Characteristics:**
-   * - ✅ Zero overhead
-   * - ✅ Lowest possible latency
-   * - ✅ No scheduler required
-   * - ❌ No guarantee if jobs arrive out of order
-   *
-   * ---
-   *
-   * ### `'scheduler'` - Redis Buffering (High Throughput, Large Windows)
-   *
-   * Jobs are buffered in Redis for `orderingWindowMs` before being made available.
-   * A scheduler periodically promotes buffered groups when their window expires.
-   *
-   * **Use when:**
-   * - Jobs arrive 1-5 seconds out of order
-   * - Processing large batches with predictable timing
-   * - Need system-wide buffering (all workers see same buffer)
-   * - High job volume with ordering requirements
-   *
-   * **Characteristics:**
-   * - ✅ Handles large time windows (≥ 1000ms)
-   * - ✅ System-wide coordination via Redis
-   * - ✅ Good for predictable batch arrivals
-   * - ⚠️  Requires scheduler running
-   * - ⚠️  Adds latency equal to window size
-   * - ⚠️  Additional Redis keys for buffering
-   *
-   * **Requirements:**
-   * - `orderingWindowMs` must be ≥ 100ms (enforced)
-   * - Recommended: ≥ 1000ms for best performance
-   * - Worker with scheduler enabled
-   *
-   * **Example:**
-   * ```typescript
-   * const queue = new Queue({
-   *   redis,
-   *   namespace: 'batch-queue',
-   *   orderingMethod: 'scheduler',
-   *   orderingWindowMs: 2000, // 2-second buffer
-   * });
-   * ```
-   *
-   * ---
-   *
-   * ### `'in-memory'` - Worker Collection (Low Latency, Small Windows)
-   *
-   * Workers hold the first job and wait `orderingWindowMs` for additional jobs to arrive.
-   * Collects jobs in memory, sorts by `orderMs`, then processes as a batch.
-   *
-   * **Use when:**
-   * - Jobs arrive 5-500ms out of order (network jitter)
-   * - Need low overhead ordering
-   * - Can't afford scheduler-based delays
-   * - Want per-worker independent operation
-   *
-   * **How it works:**
-   * 1. Worker reserves first job, holds in memory
-   * 2. Waits `orderingWindowMs`, checking for more jobs
-   * 3. Timer resets each time a new job arrives (up to 3x max)
-   * 4. When no new jobs for full window, processes all in `orderMs` order
-   *
-   * **Characteristics:**
-   * - ✅ Zero scheduler overhead
-   * - ✅ No Redis buffering keys
-   * - ✅ Only waits when jobs actually arrive out of order
-   * - ✅ Scales perfectly (no coordination)
-   * - ⚠️  Adds latency equal to window for each batch
-   * - ⚠️  Workers hold jobs in memory
-   *
-   * **Requirements:**
-   * - `orderingWindowMs` must be ≤ 1000ms (enforced)
-   * - Recommended: 50-500ms for best results
-   * - No scheduler required
-   *
-   * **Example:**
-   * ```typescript
-   * const queue = new Queue({
-   *   redis,
-   *   namespace: 'realtime-queue',
-   *   orderingMethod: 'in-memory',
-   *   orderingWindowMs: 200, // 200ms grace for network jitter
-   * });
-   * ```
-   *
-   * ---
-   *
-   * ## Choosing the Right Method
-   *
-   * | Scenario | Method | Window |
-   * |----------|--------|---------|
-   * | Jobs always in order | `'none'` | N/A |
-   * | Network jitter (5-100ms) | `'in-memory'` | 100-200ms |
-   * | Medium latency (100-1000ms) | `'in-memory'` | 200-500ms |
-   * | Large batches (1-5s) | `'scheduler'` | 1000-5000ms |
-   * | Distributed timestamps | `'scheduler'` | Based on clock skew |
-   *
-   * **Performance Comparison:**
-   * - `'none'`: ~50,000 jobs/sec, 0ms added latency
-   * - `'in-memory'`: ~45,000 jobs/sec, +50-500ms latency per batch
-   * - `'scheduler'`: ~40,000 jobs/sec, +1000-5000ms latency
-   */
-  orderingMethod?: OrderingMethod;
-
-  /**
-   * Time window in milliseconds for the ordering method.
-   * Required when `orderingMethod` is not `'none'`.
-   *
-   * **For `orderingMethod: 'scheduler'`:**
-   * - Jobs buffered in Redis for this duration
-   * - Minimum: 100ms (enforced, values below are treated as 0)
-   * - Recommended: ≥ 1000ms
-   * - Example: `2000` (2-second buffer for batch arrivals)
-   *
-   * **For `orderingMethod: 'in-memory'`:**
-   * - Worker waits this long for additional jobs
-   * - Maximum: 1000ms (enforced, values above are capped)
-   * - Recommended: 50-500ms
-   * - Example: `200` (200ms grace for network jitter)
-   *
-   * **For `orderingMethod: 'none'`:**
-   * - This option is ignored
-   *
-   * @default 0
-   */
-  orderingWindowMs?: number;
-
-  /**
-   * Maximum wait time multiplier for the grace period when using `orderingMethod: 'in-memory'`.
-   *
-   * The grace period timer resets each time a new job arrives, but to prevent
-   * infinite waiting, it will never extend beyond `orderingWindowMs * orderingMaxWaitMultiplier`
-   * from when the first job was reserved.
-   *
-   * **Example:**
-   * - `orderingWindowMs: 100`, `orderingMaxWaitMultiplier: 3` → Max wait: 300ms total
-   * - `orderingWindowMs: 200`, `orderingMaxWaitMultiplier: 5` → Max wait: 1000ms total
-   *
-   * @default 3
-   * @example 2 // Stricter timeout (2x the ordering window)
-   * @example 5 // More lenient for high-latency scenarios
+   * @default 0 (no retention)
+   * @example 100 // Keep last 100 completed jobs
+   * @example 1000 // Keep last 1000 completed jobs for analysis
    *
    * **When to adjust:**
-   * - High network latency: Increase (4-10) to allow more time for delayed arrivals
-   * - Strict timing requirements: Decrease (2) for faster processing
-   * - Burst arrivals: Increase to handle continuous job streams
-   * - Low latency requirements: Decrease to minimize wait time
-   */
-  orderingMaxWaitMultiplier?: number;
-
-  /**
-   * Decay factor for the grace period when jobs keep arriving (used with `orderingMethod: 'in-memory'`).
-   *
-   * Each time a new job arrives and resets the grace period, the wait time is multiplied by this factor.
-   * This prevents excessive waiting when jobs arrive in continuous streams.
-   *
-   * **Example:**
-   * - `orderingWindowMs: 100`, `orderingGracePeriodDecay: 0.8`
-   *   - 1st wait: 100ms
-   *   - 2nd wait: 80ms (100 × 0.8)
-   *   - 3rd wait: 64ms (80 × 0.8)
-   *   - Continues until minimum (20ms) or max total wait reached
-   *
-   * **Special values:**
-   * - `1.0` (default): No decay, always wait full `orderingWindowMs`
-   * - `0.8`: Aggressive decay, 20% reduction each iteration
-   * - `0.9`: Moderate decay, 10% reduction each iteration
-   * - `0.95`: Gentle decay, 5% reduction each iteration
-   *
-   * @default 1.0 (no decay)
-   * @example 0.8 // Reduce wait by 20% each iteration
-   * @example 0.9 // Reduce wait by 10% each iteration
-   *
-   * **When to use:**
-   * - Continuous job streams: Use 0.8-0.9 to process faster
-   * - Burst arrivals: Use 0.9-0.95 to still collect most jobs
-   * - Unpredictable timing: Keep at 1.0 (no decay) for consistent behavior
-   */
-  orderingGracePeriodDecay?: number;
-
-  /**
-   * Maximum number of jobs to collect in a single batch when using `orderingMethod: 'in-memory'`.
-   *
-   * When the grace period expires, the worker collects all remaining jobs in the group up to this limit.
-   * This prevents memory issues and processing delays when many jobs have accumulated.
-   *
-   * @default 10
-   * @example 5 // Smaller batches for faster processing
-   * @example 20 // Larger batches for better throughput
-   * @example 50 // Very large batches for high-volume scenarios
-   *
-   * **When to adjust:**
-   * - High job volume: Increase (20-50) to process more jobs per batch
-   * - Memory constraints: Decrease (5-10) to reduce memory usage
-   * - Processing time: Smaller batches = more responsive, larger batches = better throughput
-   * - Large payloads: Decrease if individual jobs have large data payloads
-   */
-  orderingMaxBatchSize?: number;
-
-  /**
-   * Number of completed jobs to keep in Redis for inspection and debugging.
-   * Older completed jobs are automatically removed to prevent memory growth.
-   *
-   * @default 0 (don't keep completed jobs)
-   * @example 10 // Keep last 10 completed jobs
-   * @example 100 // Keep last 100 for debugging
-   *
-   * **When to adjust:**
-   * - Debugging: Increase (10-100) to inspect recent completions
-   * - Monitoring: Keep some for operational insights
-   * - Memory constraints: Keep low (0-10) to minimize Redis memory usage
-   * - Audit requirements: Increase based on compliance needs
+   * - Debugging: Increase to investigate issues
+   * - Memory constraints: Decrease to reduce Redis memory usage
+   * - Compliance: Increase for audit requirements
    */
   keepCompleted?: number;
 
   /**
-   * Number of failed jobs to keep in Redis for inspection and debugging.
-   * Older failed jobs are automatically removed to prevent memory growth.
+   * Maximum number of failed jobs to retain for inspection.
+   * Jobs beyond this limit are automatically cleaned up.
    *
-   * @default 0 (don't keep failed jobs)
-   * @example 50 // Keep last 50 failed jobs for analysis
-   * @example 200 // Keep more for debugging persistent failures
+   * @default 0 (no retention)
+   * @example 1000 // Keep last 1000 failed jobs for analysis
+   * @example 10000 // Keep more failed jobs for trend analysis
    *
    * **When to adjust:**
-   * - Error analysis: Increase (50-200) to analyze failure patterns
-   * - Debugging: Keep failed jobs to understand why they failed
-   * - Memory constraints: Keep low (0-20) to minimize Redis memory usage
-   * - Monitoring: Keep some for operational insights
+   * - Error analysis: Increase to investigate failure patterns
+   * - Memory constraints: Decrease to reduce Redis memory usage
+   * - Compliance: Increase for audit requirements
    */
   keepFailed?: number;
 
   /**
-   * Time-to-live in milliseconds for the scheduler lock.
-   * Prevents multiple workers from running scheduler operations simultaneously.
-   * Should be longer than your longest scheduler operation.
+   * TTL for scheduler lock in milliseconds.
+   * Prevents multiple schedulers from running simultaneously.
    *
-   * @default 1500 (1.5 seconds)
-   * @example 3000 // 3 seconds for complex cron jobs
-   * @example 5000 // 5 seconds for heavy delayed job processing
-   *
-   * **When to adjust:**
-   * - Complex cron jobs: Increase if scheduler operations take longer
-   * - Many delayed jobs: Increase if promotion takes significant time
-   * - Fast operations: Decrease (1000ms) for quicker lock release
-   * - Multiple workers: Ensure TTL is longer than operation time
+   * @default 1500
+   * @example 3000 // 3 seconds for slower environments
+   * @example 1000 // 1 second for faster environments
    */
   schedulerLockTtlMs?: number;
+
+  /**
+   * Ordering delay in milliseconds. When set, jobs with orderMs will be staged
+   * and promoted only after orderMs + orderingDelayMs to ensure proper ordering
+   * even when producers are out of sync.
+   *
+   * @default 0 (no staging, jobs processed immediately)
+   * @example 200 // Wait 200ms to ensure all jobs arrive in order
+   * @example 1000 // Wait 1 second for strict ordering
+   *
+   * **When to use:**
+   * - Distributed producers with clock drift
+   * - Strict timestamp ordering required
+   * - Network latency between producers
+   *
+   * **Note:** Only applies to jobs with orderMs set. Jobs without orderMs
+   * are never staged.
+   */
+  orderingDelayMs?: number;
+
+  /**
+   * Enable automatic job batching to reduce Redis load.
+   * Jobs are buffered in memory and sent in batches.
+   *
+   * @default undefined (disabled)
+   * @example true // Enable with defaults (size: 10, maxWaitMs: 10)
+   * @example { size: 20, maxWaitMs: 5 } // Custom configuration
+   *
+   * **Trade-offs:**
+   * - ✅ 10x fewer Redis calls (huge performance win)
+   * - ✅ Higher throughput (5-10x improvement)
+   * - ✅ Lower latency per add() call
+   * - ⚠️ Jobs buffered in memory briefly before Redis
+   * - ⚠️ If process crashes during batch window, those jobs are lost
+   *
+   * **When to use:**
+   * - High job volume (>100 jobs/s)
+   * - Using orderingDelayMs (already buffering)
+   * - Network latency is a bottleneck
+   * - Acceptable risk of losing jobs during crash (e.g., non-critical jobs)
+   *
+   * **When NOT to use:**
+   * - Critical jobs that must be persisted immediately
+   * - Very low volume (<10 jobs/s)
+   * - Zero tolerance for data loss
+   *
+   * **Configuration:**
+   * - size: Maximum jobs per batch (default: 10)
+   * - maxWaitMs: Maximum time to wait before flushing (default: 10)
+   *
+   * **Safety:**
+   * - Keep maxWaitMs small (10ms = very low risk)
+   * - Batches are flushed on queue.close()
+   * - Consider graceful shutdown handling
+   */
+  autoBatch?:
+    | boolean
+    | {
+        size?: number;
+        maxWaitMs?: number;
+      };
 };
 
 /**
@@ -554,40 +380,34 @@ export class Queue<T = any> {
   private scanLimit: number;
   private keepCompleted: number;
 
-  // Internal properties derived from orderingMethod + orderingWindowMs
-  private _schedulerBufferMs: number; // For 'scheduler' method
-  private _graceCollectionMs: number; // For 'in-memory' method
-  private _orderingMaxWaitMultiplier: number; // Max grace period multiplier
-  private _orderingGracePeriodDecay: number; // Grace period decay factor
-  private _orderingMaxBatchSize: number; // Max jobs to collect in a batch
   private keepFailed: number;
   private schedulerLockTtlMs: number;
+  public orderingDelayMs: number;
   public name: string;
 
   // Internal tracking for adaptive behavior
-  private _lastJobTime = 0;
   private _consecutiveEmptyReserves = 0;
 
-  // Public getters for ordering configuration
-  public get schedulerBufferMs(): number {
-    return this._schedulerBufferMs;
-  }
+  // Promoter service for staging system
+  private promoterRedis?: Redis;
+  private promoterRunning = false;
+  private promoterLockId?: string;
+  private promoterInterval?: NodeJS.Timeout;
 
-  public get graceCollectionMs(): number {
-    return this._graceCollectionMs;
-  }
-
-  public get orderingMaxWaitMultiplier(): number {
-    return this._orderingMaxWaitMultiplier;
-  }
-
-  public get orderingGracePeriodDecay(): number {
-    return this._orderingGracePeriodDecay;
-  }
-
-  public get orderingMaxBatchSize(): number {
-    return this._orderingMaxBatchSize;
-  }
+  // Auto-batching for high-throughput scenarios
+  private batchConfig?: { size: number; maxWaitMs: number };
+  private batchBuffer: Array<{
+    groupId: string;
+    data: T | null;
+    jobId: string;
+    maxAttempts: number;
+    delayMs?: number;
+    orderMs?: number;
+    resolve: (job: Job<T>) => void;
+    reject: (err: Error) => void;
+  }> = [];
+  private batchTimer?: NodeJS.Timeout;
+  private flushing = false;
 
   // Inline defineCommand bindings removed; using external Lua via evalsha
 
@@ -605,80 +425,24 @@ export class Queue<T = any> {
     this.keepCompleted = Math.max(0, opts.keepCompleted ?? 0);
     this.keepFailed = Math.max(0, opts.keepFailed ?? 0);
     this.schedulerLockTtlMs = opts.schedulerLockTtlMs ?? 1500;
+    this.orderingDelayMs = opts.orderingDelayMs ?? 0;
+
+    // Initialize auto-batching if enabled
+    if (opts.autoBatch) {
+      this.batchConfig =
+        typeof opts.autoBatch === 'boolean'
+          ? { size: 10, maxWaitMs: 10 }
+          : {
+              size: opts.autoBatch.size ?? 10,
+              maxWaitMs: opts.autoBatch.maxWaitMs ?? 10,
+            };
+    }
 
     // Initialize logger first
     this.logger =
       typeof opts.logger === 'object'
         ? opts.logger
         : new Logger(!!opts.logger, this.namespace);
-
-    // Handle ordering configuration
-    const orderingMethod = opts.orderingMethod ?? 'none';
-    const orderingWindowMs = opts.orderingWindowMs ?? 0;
-
-    if (orderingMethod === 'scheduler') {
-      this._schedulerBufferMs = orderingWindowMs;
-      this._graceCollectionMs = 0;
-
-      // Enforce minimum 100ms for scheduler-based buffering
-      if (this._schedulerBufferMs > 0 && this._schedulerBufferMs < 100) {
-        this.logger.warn(
-          `orderingWindowMs ${this._schedulerBufferMs}ms is below minimum 100ms for scheduler method. Disabling ordering.`,
-        );
-        this._schedulerBufferMs = 0;
-      }
-
-      if (this._schedulerBufferMs > 0 && this._schedulerBufferMs < 1000) {
-        this.logger.warn(
-          `orderingWindowMs ${this._schedulerBufferMs}ms is below recommended 1000ms for scheduler method. Consider using 'in-memory' for smaller windows.`,
-        );
-      }
-    } else if (orderingMethod === 'in-memory') {
-      this._schedulerBufferMs = 0;
-      this._graceCollectionMs = orderingWindowMs;
-
-      // Enforce maximum 1000ms for in-memory collection
-      if (this._graceCollectionMs > 1000) {
-        this.logger.warn(
-          `orderingWindowMs ${this._graceCollectionMs}ms exceeds maximum 1000ms for in-memory method. Capping at 1000ms. Consider using 'scheduler' for larger windows.`,
-        );
-        this._graceCollectionMs = 1000;
-      }
-
-      if (this._graceCollectionMs > 0 && this._graceCollectionMs < 50) {
-        this.logger.warn(
-          `orderingWindowMs ${this._graceCollectionMs}ms is below recommended 50ms for in-memory method.`,
-        );
-      }
-    } else {
-      // 'none' or invalid
-      this._schedulerBufferMs = 0;
-      this._graceCollectionMs = 0;
-    }
-
-    // Initialize ordering max wait multiplier (default: 3x)
-    this._orderingMaxWaitMultiplier = Math.max(
-      1,
-      opts.orderingMaxWaitMultiplier ?? 3,
-    );
-
-    // Initialize ordering grace period decay (default: 1.0 = no decay)
-    // Clamp between 0.5 and 1.0 to prevent extreme values
-    const decayValue = opts.orderingGracePeriodDecay ?? 1.0;
-    this._orderingGracePeriodDecay = Math.max(0.5, Math.min(1.0, decayValue));
-
-    if (decayValue < 0.5 || decayValue > 1.0) {
-      this.logger.warn(
-        `orderingGracePeriodDecay ${decayValue} is outside valid range [0.5, 1.0]. Clamping to ${this._orderingGracePeriodDecay}.`,
-      );
-    }
-
-    // Initialize max batch size (default: 10)
-    // Clamp between 1 and 100 to prevent extreme values
-    this._orderingMaxBatchSize = Math.max(
-      1,
-      Math.min(100, opts.orderingMaxBatchSize ?? 10),
-    );
 
     this.r.on('error', (err) => {
       this.logger.error('Redis error (main):', err);
@@ -705,10 +469,6 @@ export class Queue<T = any> {
     return this.defaultMaxAttempts;
   }
 
-  get orderingWindowMs(): number {
-    return this._schedulerBufferMs || this._graceCollectionMs || 0;
-  }
-
   async add(opts: AddOptions<T>): Promise<JobEntity<T>> {
     const maxAttempts = opts.maxAttempts ?? this.defaultMaxAttempts;
     const orderMs = opts.orderMs ?? Date.now();
@@ -720,34 +480,92 @@ export class Queue<T = any> {
       return this.addRepeatingJob({ ...opts, orderMs, maxAttempts });
     }
 
-    // Calculate delay timestamp
-    let delayUntil = 0;
+    // Calculate delay
+    let delayMs: number | undefined;
     if (opts.delay !== undefined && opts.delay > 0) {
-      delayUntil = now + opts.delay;
+      delayMs = opts.delay;
     } else if (opts.runAt !== undefined) {
       const runAtTimestamp =
         opts.runAt instanceof Date ? opts.runAt.getTime() : opts.runAt;
-      // Clamp past dates to now, but subtract 100ms to ensure it's definitely in the past
-      // relative to Redis TIME used in the Lua script (accounts for network latency, etc.)
-      delayUntil = Math.max(runAtTimestamp, now - 100); // Don't allow past dates
+      delayMs = Math.max(0, runAtTimestamp - now);
     }
 
     // Handle undefined data by converting to null for consistent JSON serialization
-    const data = opts.data === undefined ? null : opts.data;
-    const serializedPayload = JSON.stringify(data);
+    const data = opts.data === undefined ? null : (opts.data as T);
 
-    const result = await evalScript<string[] | string>(this.r, 'enqueue', [
-      this.ns,
-      opts.groupId,
-      serializedPayload,
-      String(maxAttempts),
-      String(orderMs),
-      String(delayUntil),
-      String(jobId),
-      String(this.keepCompleted),
-      String(this._schedulerBufferMs),
-      String(now), // Pass client timestamp for accurate timing calculations
-    ]);
+    // Use batching if enabled
+    if (this.batchConfig) {
+      return new Promise((resolve, reject) => {
+        this.batchBuffer.push({
+          groupId: opts.groupId,
+          data,
+          jobId,
+          maxAttempts,
+          delayMs,
+          orderMs,
+          resolve,
+          reject,
+        });
+
+        // Flush if batch is full
+        if (this.batchBuffer.length >= this.batchConfig!.size) {
+          this.flushBatch();
+        } else if (!this.batchTimer) {
+          // Start timer for partial batch
+          this.batchTimer = setTimeout(
+            () => this.flushBatch(),
+            this.batchConfig!.maxWaitMs,
+          );
+        }
+      });
+    }
+
+    // Non-batched path (original logic)
+    return this.addSingle({
+      ...opts,
+      data,
+      jobId,
+      maxAttempts,
+      orderMs,
+      delayMs,
+    });
+  }
+
+  private async addSingle(opts: {
+    groupId: string;
+    data: T | null;
+    jobId: string;
+    maxAttempts: number;
+    orderMs: number;
+    delayMs?: number;
+  }): Promise<JobEntity<T>> {
+    const now = Date.now();
+
+    // Calculate delay timestamp
+    let delayUntil = 0;
+    if (opts.delayMs !== undefined && opts.delayMs > 0) {
+      delayUntil = now + opts.delayMs;
+    }
+
+    const serializedPayload = JSON.stringify(opts.data);
+
+    const result = await evalScript<string[] | string>(
+      this.r,
+      'enqueue',
+      [
+        this.ns,
+        opts.groupId,
+        serializedPayload,
+        String(opts.maxAttempts),
+        String(opts.orderMs),
+        String(delayUntil),
+        String(opts.jobId),
+        String(this.keepCompleted),
+        String(now), // Pass client timestamp for accurate timing calculations
+        String(this.orderingDelayMs), // Pass orderingDelayMs for staging logic
+      ],
+      1,
+    );
 
     // Handle new array format that includes job data (avoids race condition)
     // Format: [jobId, groupId, data, attempts, maxAttempts, timestamp, orderMs, delayUntil, status]
@@ -787,20 +605,119 @@ export class Queue<T = any> {
     return this.getJob(result);
   }
 
+  private async flushBatch(): Promise<void> {
+    // Clear timer
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = undefined;
+    }
+
+    if (this.batchBuffer.length === 0 || this.flushing) return;
+
+    this.flushing = true;
+    const batch = this.batchBuffer.splice(0); // Take all pending jobs
+
+    try {
+      this.logger.debug(`Flushing batch of ${batch.length} jobs`);
+      const now = Date.now();
+
+      // Prepare batch data for Lua script
+      const jobsData = batch.map((job) => ({
+        jobId: job.jobId,
+        groupId: job.groupId,
+        data: JSON.stringify(job.data),
+        maxAttempts: job.maxAttempts,
+        orderMs: job.orderMs,
+        delayMs: job.delayMs,
+      }));
+
+      // Call batch enqueue Lua script
+      // Returns array of job data arrays: [[jobId, groupId, data, attempts, maxAttempts, timestamp, orderMs, delayUntil, status], ...]
+      const jobDataArrays = await evalScript<string[][]>(
+        this.r,
+        'enqueue-batch',
+        [
+          this.ns,
+          JSON.stringify(jobsData),
+          String(this.keepCompleted),
+          String(now),
+          String(this.orderingDelayMs),
+        ],
+        1,
+      );
+
+      // Resolve all promises with job entities
+      for (let i = 0; i < batch.length; i++) {
+        const job = batch[i];
+        const jobDataArray = jobDataArrays[i];
+
+        try {
+          if (jobDataArray && jobDataArray.length >= 9) {
+            const [
+              returnedJobId,
+              returnedGroupId,
+              returnedData,
+              attempts,
+              returnedMaxAttempts,
+              timestamp,
+              returnedOrderMs,
+              returnedDelayUntil,
+              status,
+            ] = jobDataArray;
+
+            const jobEntity = JobEntity.fromRawHash<T>(
+              this,
+              returnedJobId,
+              {
+                id: returnedJobId,
+                groupId: returnedGroupId,
+                data: returnedData,
+                attempts,
+                maxAttempts: returnedMaxAttempts,
+                timestamp,
+                orderMs: returnedOrderMs,
+                delayUntil: returnedDelayUntil,
+                status,
+              },
+              status as any,
+            );
+            job.resolve(jobEntity);
+          } else {
+            throw new Error('Invalid job data returned from batch enqueue');
+          }
+        } catch (err) {
+          job.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+    } catch (err) {
+      // Reject all promises on error
+      for (const job of batch) {
+        job.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    } finally {
+      this.flushing = false;
+
+      // If there are jobs that accumulated during flush, flush them now
+      if (this.batchBuffer.length > 0) {
+        // Use setImmediate to avoid deep recursion
+        setImmediate(() => this.flushBatch());
+      }
+    }
+  }
+
   async reserve(): Promise<ReservedJob<T> | null> {
     const now = Date.now();
 
-    const raw = await evalScript<string | null>(this.r, 'reserve', [
-      this.ns,
-      String(now),
-      String(this.vt),
-      String(this.scanLimit),
-      String(this._schedulerBufferMs),
-    ]);
+    const raw = await evalScript<string | null>(
+      this.r,
+      'reserve',
+      [this.ns, String(now), String(this.vt), String(this.scanLimit)],
+      1,
+    );
 
     if (!raw) return null;
 
-    const parts = raw.split('||DELIMITER||');
+    const parts = raw.split('|||');
     if (parts.length !== 10) return null;
 
     let data: T;
@@ -829,8 +746,6 @@ export class Queue<T = any> {
       deadlineAt: Number.parseInt(parts[9], 10),
     } as ReservedJob<T>;
 
-    this._lastJobTime = Date.now();
-
     return job;
   }
 
@@ -850,11 +765,12 @@ export class Queue<T = any> {
    * is kept for backward compatibility and testing only.
    */
   async complete(job: { id: string; groupId: string }) {
-    await evalScript<number>(this.r, 'complete', [
-      this.ns,
-      job.id,
-      job.groupId,
-    ]);
+    await evalScript<number>(
+      this.r,
+      'complete',
+      [this.ns, job.id, job.groupId],
+      1,
+    );
   }
 
   /**
@@ -871,20 +787,25 @@ export class Queue<T = any> {
       maxAttempts: number;
     },
   ): Promise<void> {
-    await evalScript<number>(this.r, 'complete-with-metadata', [
-      this.ns,
-      job.id,
-      job.groupId,
-      'completed',
-      String(meta.finishedOn),
-      JSON.stringify(result ?? null),
-      String(this.keepCompleted),
-      String(this.keepFailed),
-      String(meta.processedOn),
-      String(meta.finishedOn),
-      String(meta.attempts),
-      String(meta.maxAttempts),
-    ]);
+    await evalScript<number>(
+      this.r,
+      'complete-with-metadata',
+      [
+        this.ns,
+        job.id,
+        job.groupId,
+        'completed',
+        String(meta.finishedOn),
+        JSON.stringify(result ?? null),
+        String(this.keepCompleted),
+        String(this.keepFailed),
+        String(meta.processedOn),
+        String(meta.finishedOn),
+        String(meta.attempts),
+        String(meta.maxAttempts),
+      ],
+      1,
+    );
   }
 
   /**
@@ -927,8 +848,8 @@ export class Queue<T = any> {
           String(meta.maxAttempts),
           String(now),
           String(this.jobTimeoutMs),
-          String(this._schedulerBufferMs),
         ],
+        1,
       );
 
       if (!result) {
@@ -936,7 +857,7 @@ export class Queue<T = any> {
       }
 
       // Parse the result (same format as reserve methods)
-      const parts = result.split('||DELIMITER||');
+      const parts = result.split('|||');
       if (parts.length !== 10) {
         this.logger.error(
           'Queue completeAndReserveNextWithMetadata: unexpected result format:',
@@ -979,19 +900,34 @@ export class Queue<T = any> {
     }
   }
 
+  /**
+   * Check if a job is currently in processing state
+   */
+  async isJobProcessing(jobId: string): Promise<boolean> {
+    const score = await this.r.zscore(`${this.ns}:processing`, jobId);
+    return score !== null;
+  }
+
   async retry(jobId: string, backoffMs = 0) {
-    return evalScript<number>(this.r, 'retry', [
-      this.ns,
-      jobId,
-      String(backoffMs),
-    ]);
+    return evalScript<number>(
+      this.r,
+      'retry',
+      [this.ns, jobId, String(backoffMs)],
+
+      1,
+    );
   }
 
   /**
    * Dead letter a job (remove from group and optionally store in dead letter queue)
    */
   async deadLetter(jobId: string, groupId: string) {
-    return evalScript<number>(this.r, 'dead-letter', [this.ns, jobId, groupId]);
+    return evalScript<number>(
+      this.r,
+      'dead-letter',
+      [this.ns, jobId, groupId],
+      1,
+    );
   }
 
   /**
@@ -1015,19 +951,24 @@ export class Queue<T = any> {
     const maxAttempts = meta.maxAttempts ?? this.defaultMaxAttempts;
 
     try {
-      await evalScript<number>(this.r, 'record-job-result', [
-        this.ns,
-        job.id,
-        'completed',
-        String(finishedOn),
-        JSON.stringify(result ?? null),
-        String(this.keepCompleted),
-        String(this.keepFailed),
-        String(processedOn),
-        String(finishedOn),
-        String(attempts),
-        String(maxAttempts),
-      ]);
+      await evalScript<number>(
+        this.r,
+        'record-job-result',
+        [
+          this.ns,
+          job.id,
+          'completed',
+          String(finishedOn),
+          JSON.stringify(result ?? null),
+          String(this.keepCompleted),
+          String(this.keepFailed),
+          String(processedOn),
+          String(finishedOn),
+          String(attempts),
+          String(maxAttempts),
+        ],
+        1,
+      );
     } catch (error) {
       this.logger.error(`Error recording completion for job ${job.id}:`, error);
       throw error;
@@ -1100,19 +1041,24 @@ export class Queue<T = any> {
     const errorInfo = JSON.stringify({ message, name, stack });
 
     try {
-      await evalScript<number>(this.r, 'record-job-result', [
-        this.ns,
-        job.id,
-        'failed',
-        String(finishedOn),
-        errorInfo,
-        String(this.keepCompleted),
-        String(this.keepFailed),
-        String(processedOn),
-        String(finishedOn),
-        String(attempts),
-        String(maxAttempts),
-      ]);
+      await evalScript<number>(
+        this.r,
+        'record-job-result',
+        [
+          this.ns,
+          job.id,
+          'failed',
+          String(finishedOn),
+          errorInfo,
+          String(this.keepCompleted),
+          String(this.keepFailed),
+          String(processedOn),
+          String(finishedOn),
+          String(attempts),
+          String(maxAttempts),
+        ],
+        1,
+      );
     } catch (err) {
       this.logger.error(
         `Error recording final failure for job ${job.id}:`,
@@ -1316,12 +1262,12 @@ export class Queue<T = any> {
     return this.r.zcard(`${this.ns}:failed`);
   }
   async heartbeat(job: { id: string; groupId: string }, extendMs = this.vt) {
-    return evalScript<number>(this.r, 'heartbeat', [
-      this.ns,
-      job.id,
-      job.groupId,
-      String(extendMs),
-    ]);
+    return evalScript<number>(
+      this.r,
+      'heartbeat',
+      [this.ns, job.id, job.groupId, String(extendMs)],
+      1,
+    );
   }
 
   /**
@@ -1350,7 +1296,7 @@ export class Queue<T = any> {
 
       // We have the lock, run cleanup
       const now = Date.now();
-      return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)]);
+      return evalScript<number>(this.r, 'cleanup', [this.ns, String(now)], 1);
     } catch (_e) {
       return 0;
     }
@@ -1364,7 +1310,7 @@ export class Queue<T = any> {
    */
   private getBlockTimeout(maxTimeout: number, blockUntil?: number): number {
     const minimumBlockTimeout = 0.001; // 1ms like BullMQ for fast job pickup
-    const maximumBlockTimeout = 10; // 10s max like BullMQ
+    const maximumBlockTimeout = 5; // 5s max to reduce idle CPU usage
 
     // Handle delayed jobs case (when we know exactly when next job should be processed)
     if (blockUntil) {
@@ -1381,36 +1327,12 @@ export class Queue<T = any> {
       }
     }
 
-    // Factor in ordering delays for smarter blocking
-    if (this._schedulerBufferMs > 0) {
-      const nextEligibleTime = this.calculateNextEligibleJobTime();
-      if (nextEligibleTime > 0) {
-        const delayUntilEligible = nextEligibleTime - Date.now();
-        if (
-          delayUntilEligible > 0 &&
-          delayUntilEligible < maximumBlockTimeout * 1000
-        ) {
-          return Math.max(minimumBlockTimeout, delayUntilEligible / 1000);
-        }
-      }
-    }
-
     // Use maxTimeout when draining (similar to BullMQ's drainDelay), but clamp to minimum
     // This keeps the worker responsive while balancing Redis load
     return Math.max(
       minimumBlockTimeout,
       Math.min(maxTimeout, maximumBlockTimeout),
     );
-  }
-
-  /**
-   * Calculate when the next job will be eligible for processing
-   * considering ordering delays
-   */
-  private calculateNextEligibleJobTime(): number {
-    // This would require tracking delayed groups, for now return 0
-    // Could be enhanced with a separate delayed jobs timeline
-    return 0;
   }
 
   /**
@@ -1440,13 +1362,22 @@ export class Queue<T = any> {
       return null;
     }
 
-    // First try immediate reserve (fast path)
-    const immediateJob = await this.reserve();
-    if (immediateJob) {
-      this.logger.debug(
-        `Immediate reserve successful (${Date.now() - startTime}ms)`,
-      );
-      return immediateJob;
+    // Fast path optimization: Skip immediate reserve if we recently had empty reserves
+    // This avoids wasteful Lua script calls when queue is idle
+    // After 3 consecutive empty reserves, go straight to blocking for better performance
+    const skipImmediateReserve = this._consecutiveEmptyReserves >= 3;
+
+    if (!skipImmediateReserve) {
+      // Fast path: try immediate reserve first (avoids blocking when jobs are available)
+      const immediateJob = await this.reserve();
+      if (immediateJob) {
+        this.logger.debug(
+          `Immediate reserve successful (${Date.now() - startTime}ms)`,
+        );
+        // Reset consecutive empty reserves counter when we get a job via fast path
+        this._consecutiveEmptyReserves = 0;
+        return immediateJob;
+      }
     }
 
     // Use BullMQ-style adaptive timeout with delayed job consideration
@@ -1498,8 +1429,6 @@ export class Queue<T = any> {
         this.logger.debug(
           `Successful job reserve after blocking: ${job.id} from group ${job.groupId} (reserve took ${reserveDuration}ms)`,
         );
-        // Track job activity for adaptive timeout
-        this._lastJobTime = Date.now();
         // Reset consecutive empty reserves counter
         this._consecutiveEmptyReserves = 0;
       } else {
@@ -1507,8 +1436,34 @@ export class Queue<T = any> {
           `Blocking found group but reserve failed: group=${groupId} (reserve took ${reserveDuration}ms)`,
         );
 
-        // Handle poisoned groups (all jobs exceeded max attempts)
-        await this.cleanupPoisonedGroup(groupId);
+        // Check if group actually has jobs before restoring to prevent infinite loops
+        // This prevents poisoned groups (empty groups in ready queue) from being restored
+        try {
+          const groupKey = `${this.ns}:g:${groupId}`;
+          const jobCount = await this.r.zcard(groupKey);
+
+          if (jobCount > 0) {
+            // Group has jobs, restore it to ready queue
+            await this.r.zadd(readyKey, Number(score), groupId);
+            this.logger.debug(
+              `Restored group ${groupId} to ready with score ${score} after failed atomic reserve (${jobCount} jobs)`,
+            );
+          } else {
+            // Group is empty (poisoned), don't restore it
+            this.logger.warn(
+              `Not restoring empty group ${groupId} - preventing poisoned group loop`,
+            );
+          }
+        } catch (_e) {
+          // If check fails, err on the side of not restoring to prevent infinite loops
+          this.logger.warn(
+            `Failed to check group ${groupId} job count, not restoring`,
+          );
+        }
+
+        // Increment consecutive empty reserves and fall back to general reserve scan
+        this._consecutiveEmptyReserves = this._consecutiveEmptyReserves + 1;
+        return this.reserve();
       }
       return job;
     } catch (err) {
@@ -1533,46 +1488,22 @@ export class Queue<T = any> {
   }
 
   /**
-   * Try to reserve another job from the same group (for grace period collection)
-   * This is non-blocking and returns immediately if no job available
-   */
-  async tryReserveFromGroup(groupId: string): Promise<ReservedJob<T> | null> {
-    return this.reserveAtomic(groupId);
-  }
-
-  /**
    * Reserve a job from a specific group atomically (eliminates race conditions)
    * @param groupId - The group to reserve from
-   * @param allowedJobId - Optional job ID that's allowed to bypass the lock (for grace collection)
    */
-  async reserveAtomic(
-    groupId: string,
-    allowedJobId?: string,
-  ): Promise<ReservedJob<T> | null> {
+  async reserveAtomic(groupId: string): Promise<ReservedJob<T> | null> {
     const now = Date.now();
-
-    const args = [
-      this.ns,
-      String(now),
-      String(this.vt),
-      String(groupId),
-      String(this._schedulerBufferMs || 0),
-    ];
-
-    // Add allowedJobId if provided (for grace collection)
-    if (allowedJobId) {
-      args.push(allowedJobId);
-    }
 
     const result = await evalScript<string | null>(
       this.r,
       'reserve-atomic',
-      args,
+      [this.ns, String(now), String(this.vt), String(groupId)],
+      1,
     );
     if (!result) return null;
 
     // Parse the delimited string response (same format as regular reserve)
-    const parts = result.split('||DELIMITER||');
+    const parts = result.split('|||');
     if (parts.length < 10) return null;
 
     const [
@@ -1612,18 +1543,13 @@ export class Queue<T = any> {
     const results = await evalScript<Array<string | null>>(
       this.r,
       'reserve-batch',
-      [
-        this.ns,
-        String(now),
-        String(this.vt),
-        String(Math.max(1, maxBatch)),
-        String(this._schedulerBufferMs || 0),
-      ],
+      [this.ns, String(now), String(this.vt), String(Math.max(1, maxBatch))],
+      1,
     );
     const out: Array<ReservedJob<T>> = [];
     for (const r of results || []) {
       if (!r) continue;
-      const parts = r.split('||DELIMITER||');
+      const parts = r.split('|||');
       if (parts.length !== 10) continue;
       out.push({
         id: parts[0],
@@ -1638,7 +1564,6 @@ export class Queue<T = any> {
         deadlineAt: parseInt(parts[9], 10),
       } as ReservedJob<T>);
     }
-    if (out.length > 0) this._lastJobTime = Date.now();
     return out;
   }
 
@@ -1646,56 +1571,56 @@ export class Queue<T = any> {
    * Get the number of jobs currently being processed (active jobs)
    */
   async getActiveCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-active-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-active-count', [this.ns], 1);
   }
 
   /**
    * Get the number of jobs waiting to be processed
    */
   async getWaitingCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-waiting-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-waiting-count', [this.ns], 1);
   }
 
   /**
    * Get the number of jobs delayed due to backoff
    */
   async getDelayedCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-delayed-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-delayed-count', [this.ns], 1);
   }
 
   /**
    * Get list of active job IDs
    */
   async getActiveJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-active-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-active-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of waiting job IDs
    */
   async getWaitingJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-waiting-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-waiting-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of delayed job IDs
    */
   async getDelayedJobs(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-delayed-jobs', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-delayed-jobs', [this.ns], 1);
   }
 
   /**
    * Get list of unique group IDs that have jobs
    */
   async getUniqueGroups(): Promise<string[]> {
-    return evalScript<string[]>(this.r, 'get-unique-groups', [this.ns]);
+    return evalScript<string[]>(this.r, 'get-unique-groups', [this.ns], 1);
   }
 
   /**
    * Get count of unique groups that have jobs
    */
   async getUniqueGroupsCount(): Promise<number> {
-    return evalScript<number>(this.r, 'get-unique-groups-count', [this.ns]);
+    return evalScript<number>(this.r, 'get-unique-groups-count', [this.ns], 1);
   }
 
   /**
@@ -1881,12 +1806,12 @@ export class Queue<T = any> {
     maxStalledCount: number,
   ): Promise<string[]> {
     try {
-      const results = await evalScript<string[]>(this.r, 'check-stalled', [
-        this.ns,
-        String(now),
-        String(gracePeriod),
-        String(maxStalledCount),
-      ]);
+      const results = await evalScript<string[]>(
+        this.r,
+        'check-stalled',
+        [this.ns, String(now), String(gracePeriod), String(maxStalledCount)],
+        1,
+      );
       return results || [];
     } catch (error) {
       this.logger.error('Error checking stalled jobs:', error);
@@ -1895,9 +1820,169 @@ export class Queue<T = any> {
   }
 
   /**
+   * Start the promoter service for staging system.
+   * Promoter listens to Redis keyspace notifications and promotes staged jobs when ready.
+   * This is idempotent - calling multiple times has no effect if already running.
+   */
+  async startPromoter(): Promise<void> {
+    if (this.promoterRunning || this.orderingDelayMs <= 0) {
+      return; // Already running or not needed
+    }
+
+    this.promoterRunning = true;
+    this.promoterLockId = randomUUID();
+
+    try {
+      // Create duplicate Redis connection for pub/sub
+      this.promoterRedis = this.r.duplicate();
+
+      // Try to enable keyspace notifications
+      try {
+        await this.promoterRedis.config('SET', 'notify-keyspace-events', 'Ex');
+        this.logger.debug(
+          'Enabled Redis keyspace notifications for staging promoter',
+        );
+      } catch (err) {
+        this.logger.warn(
+          'Failed to enable keyspace notifications. Promoter will use polling fallback.',
+          err,
+        );
+      }
+
+      // Get Redis database number for keyspace event channel
+      const db = this.promoterRedis.options.db ?? 0;
+
+      const timerKey = `${this.ns}:stage:timer`;
+      const expiredChannel = `__keyevent@${db}__:expired`;
+
+      // Subscribe to keyspace expiration events
+      await this.promoterRedis.subscribe(expiredChannel, (err) => {
+        if (err) {
+          this.logger.error('Failed to subscribe to keyspace events:', err);
+        } else {
+          this.logger.debug(`Subscribed to ${expiredChannel}`);
+        }
+      });
+
+      // Handle expiration events
+      this.promoterRedis.on('message', async (channel, message) => {
+        if (channel === expiredChannel && message === timerKey) {
+          await this.runPromotion();
+        }
+      });
+
+      // Fallback: polling interval (100ms) in case keyspace notifications fail
+      this.promoterInterval = setInterval(async () => {
+        await this.runPromotion();
+      }, 100);
+
+      // Initial promotion check
+      await this.runPromotion();
+
+      this.logger.debug('Staging promoter started');
+    } catch (err) {
+      this.logger.error('Failed to start promoter:', err);
+      this.promoterRunning = false;
+      await this.stopPromoter();
+    }
+  }
+
+  /**
+   * Run a single promotion cycle with distributed locking
+   */
+  private async runPromotion(): Promise<void> {
+    if (!this.promoterRunning) {
+      return;
+    }
+
+    const lockKey = `${this.ns}:promoter:lock`;
+    const lockTtl = 30000; // 30 seconds
+
+    try {
+      // Try to acquire lock
+      const acquired = await this.r.set(
+        lockKey,
+        this.promoterLockId!,
+        'PX',
+        lockTtl,
+        'NX',
+      );
+
+      if (acquired === 'OK') {
+        try {
+          // Promote staged jobs
+          const promoted = await evalScript<number>(
+            this.r,
+            'promote-staged',
+            [
+              this.ns,
+              String(Date.now()),
+              String(100), // Limit per batch
+            ],
+            1,
+          );
+
+          if (promoted > 0) {
+            this.logger.debug(`Promoted ${promoted} staged jobs`);
+          }
+        } finally {
+          // Release lock (only if it's still ours)
+          const currentLockValue = await this.r.get(lockKey);
+          if (currentLockValue === this.promoterLockId) {
+            await this.r.del(lockKey);
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.error('Error during promotion:', err);
+    }
+  }
+
+  /**
+   * Stop the promoter service
+   */
+  async stopPromoter(): Promise<void> {
+    if (!this.promoterRunning) return;
+
+    this.promoterRunning = false;
+
+    // Clear interval
+    if (this.promoterInterval) {
+      clearInterval(this.promoterInterval);
+      this.promoterInterval = undefined;
+    }
+
+    // Close promoter Redis connection
+    if (this.promoterRedis) {
+      try {
+        await this.promoterRedis.unsubscribe();
+        await this.promoterRedis.quit();
+      } catch (_err) {
+        try {
+          this.promoterRedis.disconnect();
+        } catch (_e) {}
+      }
+      this.promoterRedis = undefined;
+    }
+
+    this.logger.debug('Staging promoter stopped');
+  }
+
+  /**
    * Close underlying Redis connections
    */
   async close(): Promise<void> {
+    // Flush any pending batched jobs before closing
+    if (this.batchConfig && this.batchBuffer.length > 0) {
+      this.logger.debug(
+        `Flushing ${this.batchBuffer.length} pending batched jobs before close`,
+      );
+      await this.flushBatch();
+    }
+
+    // Stop promoter
+    await this.stopPromoter();
+
     try {
       await this.r.quit();
     } catch (_e) {
@@ -1936,7 +2021,12 @@ export class Queue<T = any> {
     while (Date.now() - startTime < timeoutMs) {
       try {
         // Single atomic Lua script checks all queue structures
-        const isEmpty = await evalScript<number>(this.r, 'is-empty', [this.ns]);
+        const isEmpty = await evalScript<number>(
+          this.r,
+          'is-empty',
+          [this.ns],
+          1,
+        );
 
         if (isEmpty === 1) {
           await sleep(0);
@@ -2001,6 +2091,7 @@ export class Queue<T = any> {
         this.r,
         'cleanup-poisoned-group',
         [this.ns, groupId, String(now)],
+        1,
       );
       if (result === 'poisoned') {
         this.logger.warn(`Removed poisoned group ${groupId} from ready queue`);
@@ -2018,28 +2109,6 @@ export class Queue<T = any> {
     } catch (error) {
       this.logger.error(`Error cleaning up group ${groupId}:`, error);
       return 'error';
-    }
-  }
-
-  /**
-   * Check for groups that might be ready after their ordering delay has expired.
-   * This is a recovery mechanism for groups that were delayed but not re-added to ready queue.
-   */
-  async recoverDelayedGroups(): Promise<number> {
-    if (this._schedulerBufferMs <= 0) {
-      return 0;
-    }
-
-    try {
-      const result = await evalScript<number>(
-        this.r,
-        'recover-delayed-groups',
-        [this.ns, String(Date.now()), String(this._schedulerBufferMs)],
-      );
-      return result || 0;
-    } catch (error) {
-      this.logger.warn('Error in recoverDelayedGroups:', error);
-      return 0;
     }
   }
 
@@ -2071,7 +2140,6 @@ export class Queue<T = any> {
     if (!ok) return;
     // Reduced limits for faster execution: process a few jobs per tick instead of hundreds
     await this.promoteDelayedJobsBounded(32, now);
-    await this.promoteBufferedGroups(now);
     await this.processRepeatingJobsBounded(16, now);
   }
 
@@ -2085,10 +2153,12 @@ export class Queue<T = any> {
     let moved = 0;
     for (let i = 0; i < limit; i++) {
       try {
-        const n = await evalScript<number>(this.r, 'promote-delayed-one', [
-          this.ns,
-          String(now),
-        ]);
+        const n = await evalScript<number>(
+          this.r,
+          'promote-delayed-one',
+          [this.ns, String(now)],
+          1,
+        );
         if (!n || n <= 0) break;
         moved += n;
       } catch (_e) {
@@ -2096,29 +2166,6 @@ export class Queue<T = any> {
       }
     }
     return moved;
-  }
-
-  /**
-   * Promote groups from buffering state to ready when their buffering window has elapsed.
-   * This is called by the scheduler to enforce scheduler-based buffering (`orderingMethod: 'scheduler'`).
-   * Only runs if buffer window >= 100ms (below that, buffering overhead isn't worth it).
-   */
-  async promoteBufferedGroups(now = Date.now()): Promise<number> {
-    if (this._schedulerBufferMs < 100) {
-      return 0;
-    }
-
-    try {
-      const promoted = await evalScript<number>(
-        this.r,
-        'promote-buffered-groups',
-        [this.ns, String(now)],
-      );
-      return promoted || 0;
-    } catch (error) {
-      this.logger.warn('Error promoting buffered groups:', error);
-      return 0;
-    }
   }
 
   /**
@@ -2177,17 +2224,21 @@ export class Queue<T = any> {
         await this.r.zadd(scheduleKey, nextRunTime, repeatKey);
 
         // Enqueue the instance
-        await evalScript<string>(this.r, 'enqueue', [
-          this.ns,
-          repeatJobData.groupId,
-          JSON.stringify(repeatJobData.data),
-          String(repeatJobData.maxAttempts ?? this.defaultMaxAttempts),
-          String(repeatJobData.orderMs ?? now),
-          String(0),
-          String(randomUUID()),
-          String(this.keepCompleted),
-          String(this._schedulerBufferMs),
-        ]);
+        await evalScript<string>(
+          this.r,
+          'enqueue',
+          [
+            this.ns,
+            repeatJobData.groupId,
+            JSON.stringify(repeatJobData.data),
+            String(repeatJobData.maxAttempts ?? this.defaultMaxAttempts),
+            String(repeatJobData.orderMs ?? now),
+            String(0),
+            String(randomUUID()),
+            String(this.keepCompleted),
+          ],
+          1,
+        );
 
         processed++;
       } catch (error) {
@@ -2207,10 +2258,12 @@ export class Queue<T = any> {
    */
   async promoteDelayedJobs(): Promise<number> {
     try {
-      return await evalScript<number>(this.r, 'promote-delayed-jobs', [
-        this.ns,
-        String(Date.now()),
-      ]);
+      return await evalScript<number>(
+        this.r,
+        'promote-delayed-jobs',
+        [this.ns, String(Date.now())],
+        1,
+      );
     } catch (error) {
       this.logger.error(`Error promoting delayed jobs:`, error);
       return 0;
@@ -2224,12 +2277,12 @@ export class Queue<T = any> {
     const newDelayUntil = newDelay > 0 ? Date.now() + newDelay : 0;
 
     try {
-      const result = await evalScript<number>(this.r, 'change-delay', [
-        this.ns,
-        jobId,
-        String(newDelayUntil),
-        String(Date.now()),
-      ]);
+      const result = await evalScript<number>(
+        this.r,
+        'change-delay',
+        [this.ns, jobId, String(newDelayUntil), String(Date.now())],
+        1,
+      );
       return result === 1;
     } catch (error) {
       this.logger.error(`Error changing delay for job ${jobId}:`, error);
@@ -2249,10 +2302,12 @@ export class Queue<T = any> {
    */
   async remove(jobId: string): Promise<boolean> {
     try {
-      const result = await evalScript<number>(this.r, 'remove', [
-        this.ns,
-        jobId,
-      ]);
+      const result = await evalScript<number>(
+        this.r,
+        'remove',
+        [this.ns, jobId],
+        1,
+      );
       return result === 1;
     } catch (error) {
       this.logger.error(`Error removing job ${jobId}:`, error);
@@ -2273,14 +2328,21 @@ export class Queue<T = any> {
   ): Promise<number> {
     const graceAt = Date.now() - graceTimeMs;
     try {
-      const removed = await evalScript<number>(this.r, 'clean-status', [
-        this.ns,
-        status,
-        String(graceAt),
-        String(Math.max(0, limit)),
-      ]);
+      const removed = await evalScript<number>(
+        this.r,
+        'clean-status',
+        [
+          this.ns,
+          status,
+          String(graceAt),
+          String(Math.max(0, Math.min(limit, 100000))),
+        ],
+        1,
+      );
       return removed ?? 0;
     } catch (error) {
+      console.log('HERE?', error);
+
       this.logger.error(`Error cleaning ${status} jobs:`, error);
       return 0;
     }

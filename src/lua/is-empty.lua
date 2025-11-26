@@ -1,5 +1,5 @@
 -- argv: ns
-local ns = ARGV[1]
+local ns = KEYS[1]
 
 -- Check processing jobs
 local processingCount = redis.call("ZCARD", ns .. ":processing")
@@ -19,11 +19,6 @@ if readyCount > 0 then
   return 0
 end
 
--- Check buffering groups
-local bufferingCount = redis.call("ZCARD", ns .. ":buffering")
-if bufferingCount > 0 then
-  return 0
-end
 
 -- Check all groups for waiting jobs
 local groups = redis.call("SMEMBERS", ns .. ":groups")
