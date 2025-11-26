@@ -1,3 +1,10 @@
+## [1.1.0](https://github.com/Openpanel-dev/groupmq/compare/v1.0.0...v1.1.0) (2025-11-26)
+
+
+### Features
+
+* Improved grouping and overall performance ([#9](https://github.com/Openpanel-dev/groupmq/issues/9)) ([20e4f52](https://github.com/Openpanel-dev/groupmq/commit/20e4f52061dc732762cd28e6d7b1658454086712))
+
 ## [1.1.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v1.1.0-next.5...v1.1.0-next.6) (2025-11-09)
 
 
