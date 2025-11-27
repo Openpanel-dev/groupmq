@@ -1,3 +1,19 @@
+/**
+ * This file contains code copied from BullMQ (https://github.com/taskforcesh/bullmq)
+ *
+ * BullMQ is a fantastic library and one of the most popular Redis-based job queue
+ * libraries for Node.js. We've copied the AsyncFifoQueue implementation from BullMQ
+ * as it's a well-designed component that fits our needs perfectly.
+ *
+ * Original copyright notice:
+ * Copyright (c) Taskforce.sh and contributors
+ *
+ * This code is used under the MIT License. The original license can be found at:
+ * https://github.com/taskforcesh/bullmq/blob/main/LICENSE
+ *
+ * Modifications may have been made to adapt this code for use in GroupMQ.
+ */
+
 class Node<T> {
   value: T | undefined = undefined;
   next: Node<T> | null = null;

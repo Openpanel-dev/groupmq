@@ -69,7 +69,7 @@ worker.run();
 
 ## Inspiration from BullMQ
 
-GroupMQ is heavily inspired by [BullMQ](https://github.com/taskforcesh/bullmq), one of the most popular Redis-based job queue libraries for Node.js. We've taken many core concepts and design patterns from BullMQ while adapting them for our specific use case of per-group FIFO processing.
+GroupMQ is heavily inspired by [BullMQ](https://github.com/taskforcesh/bullmq), a fantastic library and one of the most popular Redis-based job queue libraries for Node.js. We've taken many core concepts and design patterns from BullMQ while adapting them for our specific use case of per-group FIFO processing.
 
 ### Key differences from BullMQ:
 - **Per-group FIFO ordering**, jobs within the same group are processed in strict order
@@ -79,6 +79,18 @@ GroupMQ is heavily inspired by [BullMQ](https://github.com/taskforcesh/bullmq), 
 - **No job types**, simplified to a single job, instead use union typed data `{ type: 'paint', data: { ... } } | { type: 'repair', data: { ... } }` 
 
 We're grateful to the BullMQ team for their excellent work and the foundation they've provided for the Redis job queue ecosystem.
+
+### Third-Party Code Attribution
+
+While GroupMQ is inspired by BullMQ's design and concepts, we have also directly copied some code from BullMQ:
+
+- **`src/async-fifo-queue.ts`** - This file contains code copied from BullMQ's AsyncFifoQueue implementation. BullMQ's implementation is well-designed and fits our needs perfectly, so we've used it directly rather than reimplementing it.
+
+This code is used under the MIT License. The original copyright notice and license can be found at:
+- BullMQ Repository: https://github.com/taskforcesh/bullmq
+- BullMQ License: https://github.com/taskforcesh/bullmq/blob/main/LICENSE
+
+Original copyright: Copyright (c) Taskforce.sh and contributors
 
 ### Queue Options
 

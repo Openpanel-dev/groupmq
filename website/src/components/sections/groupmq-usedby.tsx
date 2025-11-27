@@ -10,12 +10,12 @@ export function GroupMQUsedBy() {
             Inspired by BullMQ
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed max-w-[560px]">
-            GroupMQ is heavily inspired by BullMQ and have tried to keep the API
-            as similar as possible. But with some differences to make it better
-            for our use case.
-          </p>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            BullMQ supports grouping but it's in there PRO package.
+            GroupMQ is inspired by BullMQ, a fantastic library and one of the
+            most popular Redis-based job queue libraries for Node.js. This is
+            not a fork, we've built GroupMQ from scratch while taking
+            inspiration from BullMQ's design and concepts. Some parts have been
+            inspired by BullMQ, and we've tried to keep the API as similar as
+            possible while adapting it for our specific use case.
           </p>
           <a
             href="https://github.com/taskforcesh/bullmq"
