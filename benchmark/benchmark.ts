@@ -474,6 +474,7 @@ class BullMQAdapter extends QueueAdapter {
         {
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd: process.cwd(),
+          shell: true,
         },
       );
 
@@ -739,6 +740,7 @@ class GroupMQAdapter extends QueueAdapter {
         {
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd: process.cwd(),
+          shell: true,
         },
       );
 

@@ -8,11 +8,17 @@ services:
     ports:
       - "6385:6379"
     ulimits:
-      memlock: -1 # recommended by Dragonfly
+      memlock: -1
       nofile: 65535
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     command:
       - "--cluster_mode=emulated"
       - "--lock_on_hashtags"
+      - "--maxmemory=1gb"
+      - "--proactor_threads=2"
 
   redis:
     image: redis:7.2.5-alpine

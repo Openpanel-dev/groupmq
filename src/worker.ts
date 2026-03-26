@@ -441,6 +441,20 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
   private async _runLoop(): Promise<void> {
     this.logger.info(`🚀 Worker ${this.name} starting...`);
+
+    // Auto-recover ghost active entries left by previous ungraceful shutdowns.
+    // This is idempotent — safe to run from every worker on startup.
+    try {
+      const recovered = await this.q.recoverActiveJobs();
+      if (recovered > 0) {
+        this.logger.info(
+          `Recovered ${recovered} ghost active job(s) from previous crash`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn('Failed to recover active jobs on startup:', err);
+    }
+
     // Dedicated blocking client per worker with auto-pipelining to reduce contention
     try {
       this.blockingClient = this.q.redis.duplicate({
@@ -585,10 +599,10 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
 
           const fetchedJob = allowBlocking
             ? this.q.reserveBlocking(
-                adaptiveTimeout,
-                undefined, // blockUntil removed (was always 0, dead code)
-                this.blockingClient ?? undefined,
-              )
+              adaptiveTimeout,
+              undefined, // blockUntil removed (was always 0, dead code)
+              this.blockingClient ?? undefined,
+            )
             : this.q.reserve();
 
           asyncFifoQueue.add(fetchedJob);

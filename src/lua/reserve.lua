@@ -79,6 +79,48 @@ for i = 1, #groups, 2 do
   
   -- Check if group has no active jobs (BullMQ-style gating)
   local activeCount = redis.call("LLEN", groupActiveKey)
+
+  -- Self-healing: detect and clean up ghost active entries left by ungraceful shutdown
+  if activeCount > 0 then
+    local firstActive = redis.call("LINDEX", groupActiveKey, 0)
+    if firstActive then
+      local isStale = false
+      local procScore = redis.call("ZSCORE", processingKey, firstActive)
+      if not procScore then
+        isStale = true
+      else
+        local sStatus = redis.call("HGET", ns .. ":job:" .. firstActive, "status")
+        if not sStatus or (sStatus ~= "processing" and sStatus ~= "completing") then
+          isStale = true
+        else
+          local deadline = tonumber(procScore)
+          if deadline then
+            local gap = deadline - now
+            local hbThreshold = math.max(30000, math.min(120000, math.floor(vt / 3)))
+            if gap < (vt - hbThreshold) then
+              isStale = true
+            end
+          end
+        end
+      end
+      if isStale then
+        redis.call("DEL", groupActiveKey)
+        local sJobKey = ns .. ":job:" .. firstActive
+        local sScore = redis.call("HGET", sJobKey, "score")
+        if sScore then
+          redis.call("ZADD", gZ, tonumber(sScore), firstActive)
+          redis.call("HSET", sJobKey, "status", "waiting")
+        end
+        redis.call("ZREM", processingKey, firstActive)
+        redis.call("DEL", ns .. ":processing:" .. firstActive)
+        activeCount = 0
+      end
+    else
+      redis.call("DEL", groupActiveKey)
+      activeCount = 0
+    end
+  end
+
   if activeCount == 0 then
     -- Check if group has jobs
     local head = redis.call("ZRANGE", gZ, 0, 0, "WITHSCORES")

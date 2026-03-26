@@ -1,313 +1,719 @@
 {
   "commandstats": {
-    "config": {
+    "config|resetstat": {
       "calls": 1,
-      "usec": 631,
-      "usec_per_call": 631,
+      "usec": 2009,
+      "usec_per_call": 2009,
       "rejected_calls": 0,
       "failed_calls": 0
     },
-    "del": {
-      "calls": 15598,
-      "usec": 43047,
-      "usec_per_call": 2.75978,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "evalsha": {
-      "calls": 10870,
-      "usec": 1469959,
-      "usec_per_call": 135.231,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "get": {
-      "calls": 1352,
-      "usec": 4029,
-      "usec_per_call": 2.98003,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "hget": {
-      "calls": 5598,
-      "usec": 44615,
-      "usec_per_call": 7.96981,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "hmget": {
-      "calls": 5000,
-      "usec": 42453,
-      "usec_per_call": 8.4906,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "hmset": {
-      "calls": 5000,
-      "usec": 26314,
-      "usec_per_call": 5.2628,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "hset": {
-      "calls": 25000,
-      "usec": 51691,
-      "usec_per_call": 2.06764,
+    "lrange": {
+      "calls": 200,
+      "usec": 1443,
+      "usec_per_call": 7.22,
       "rejected_calls": 0,
       "failed_calls": 0
     },
     "incr": {
-      "calls": 5000,
-      "usec": 4613,
-      "usec_per_call": 0.9226,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "info": {
-      "calls": 20,
-      "usec": 19881,
-      "usec_per_call": 994.05,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "lindex": {
-      "calls": 5000,
-      "usec": 13037,
-      "usec_per_call": 2.6074,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "llen": {
-      "calls": 643,
-      "usec": 509,
-      "usec_per_call": 0.791602,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "lpop": {
-      "calls": 5000,
-      "usec": 17404,
-      "usec_per_call": 3.4808,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "lpush": {
-      "calls": 5000,
-      "usec": 29783,
-      "usec_per_call": 5.9566,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "ping": {
-      "calls": 1,
-      "usec": 37,
-      "usec_per_call": 37,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "sadd": {
-      "calls": 5000,
-      "usec": 8771,
-      "usec_per_call": 1.7542,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "script": {
-      "calls": 52,
-      "usec": 13176,
-      "usec_per_call": 253.385,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "set": {
-      "calls": 5298,
-      "usec": 32845,
-      "usec_per_call": 6.19951,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "slowlog": {
-      "calls": 1,
-      "usec": 127,
-      "usec_per_call": 127,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "smembers": {
-      "calls": 58,
-      "usec": 6979,
-      "usec_per_call": 120.328,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "srem": {
-      "calls": 598,
-      "usec": 2792,
-      "usec_per_call": 4.6689,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "time": {
-      "calls": 5000,
-      "usec": 1677,
-      "usec_per_call": 0.3354,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "zadd": {
-      "calls": 19371,
-      "usec": 69815,
-      "usec_per_call": 3.6041,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "zcard": {
-      "calls": 16240,
-      "usec": 5767,
-      "usec_per_call": 0.355111,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "zpopmin": {
-      "calls": 5598,
-      "usec": 36325,
-      "usec_per_call": 6.48892,
-      "rejected_calls": 0,
-      "failed_calls": 0
-    },
-    "zrange": {
-      "calls": 11293,
-      "usec": 46850,
-      "usec_per_call": 4.14859,
+      "calls": 500,
+      "usec": 43296,
+      "usec_per_call": 86.59,
       "rejected_calls": 0,
       "failed_calls": 0
     },
     "zrangebyscore": {
-      "calls": 77,
-      "usec": 479,
-      "usec_per_call": 6.22078,
+      "calls": 359,
+      "usec": 2510,
+      "usec_per_call": 6.99,
       "rejected_calls": 0,
       "failed_calls": 0
     },
-    "zrem": {
-      "calls": 6188,
-      "usec": 22278,
-      "usec_per_call": 3.60019,
+    "zadd": {
+      "calls": 2198,
+      "usec": 60115,
+      "usec_per_call": 27.35,
       "rejected_calls": 0,
       "failed_calls": 0
     },
-    "zremrangebyrank": {
+    "bzpopmin": {
+      "calls": 219,
+      "usec": 4344,
+      "usec_per_call": 19.84,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "evalsha": {
+      "calls": 2295,
+      "usec": 807131,
+      "usec_per_call": 351.69,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "lrem": {
+      "calls": 1,
+      "usec": 9,
+      "usec_per_call": 9,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "sadd": {
+      "calls": 500,
+      "usec": 4907,
+      "usec_per_call": 9.81,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "hset": {
+      "calls": 2503,
+      "usec": 44688,
+      "usec_per_call": 17.85,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "srem": {
+      "calls": 50,
+      "usec": 144,
+      "usec_per_call": 2.88,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "hmget": {
+      "calls": 501,
+      "usec": 3872,
+      "usec_per_call": 7.73,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "get": {
+      "calls": 1225,
+      "usec": 30527,
+      "usec_per_call": 24.92,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "zpopmin": {
+      "calls": 551,
+      "usec": 3656,
+      "usec_per_call": 6.64,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "llen": {
+      "calls": 419,
+      "usec": 781,
+      "usec_per_call": 1.86,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "del": {
+      "calls": 1551,
+      "usec": 4795,
+      "usec_per_call": 3.09,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "info": {
       "calls": 8,
-      "usec": 15,
-      "usec_per_call": 1.875,
+      "usec": 1531,
+      "usec_per_call": 191.38,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "script|load": {
+      "calls": 28,
+      "usec": 944,
+      "usec_per_call": 33.71,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "lindex": {
+      "calls": 868,
+      "usec": 2290,
+      "usec_per_call": 2.64,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "smembers": {
+      "calls": 195,
+      "usec": 3943,
+      "usec_per_call": 20.22,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "zcard": {
+      "calls": 5615,
+      "usec": 7020,
+      "usec_per_call": 1.25,
       "rejected_calls": 0,
       "failed_calls": 0
     },
     "zscore": {
-      "calls": 5000,
-      "usec": 12537,
-      "usec_per_call": 2.5074,
+      "calls": 869,
+      "usec": 3428,
+      "usec_per_call": 3.94,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "hmset": {
+      "calls": 500,
+      "usec": 167628,
+      "usec_per_call": 335.26,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "set": {
+      "calls": 1445,
+      "usec": 96855,
+      "usec_per_call": 67.03,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "time": {
+      "calls": 500,
+      "usec": 1786,
+      "usec_per_call": 3.57,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "hget": {
+      "calls": 921,
+      "usec": 5815,
+      "usec_per_call": 6.31,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "zrem": {
+      "calls": 602,
+      "usec": 3418,
+      "usec_per_call": 5.68,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "lpop": {
+      "calls": 500,
+      "usec": 2019,
+      "usec_per_call": 4.04,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "lpush": {
+      "calls": 501,
+      "usec": 2299,
+      "usec_per_call": 4.59,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "zrange": {
+      "calls": 1619,
+      "usec": 6934,
+      "usec_per_call": 4.28,
+      "rejected_calls": 0,
+      "failed_calls": 0
+    },
+    "slowlog|reset": {
+      "calls": 1,
+      "usec": 379,
+      "usec_per_call": 379,
       "rejected_calls": 0,
       "failed_calls": 0
     }
   },
-  "slowlog": [],
+  "slowlog": [
+    [
+      48,
+      1774458456,
+      92361,
+      [
+        "info",
+        "commandstats"
+      ],
+      "192.168.16.1:52890",
+      ""
+    ],
+    [
+      47,
+      1774458335,
+      26709,
+      [
+        "get",
+        "groupmq:benchmark-1774456776815-nk6558dw7yp}:paused"
+      ],
+      "192.168.16.1:33890",
+      ""
+    ],
+    [
+      46,
+      1774458326,
+      55079,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-18",
+        "{\"id\":\"job-468\",\"enqueuedAt\":1774458326324}",
+        "3",
+        "1774458326324",
+        "0",
+        "91188998-3100-47d9-af93-21e4a857117e",
+        "1",
+        "1774458326324",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      45,
+      1774458326,
+      54866,
+      [
+        "HMSET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:job:91188998-3100-47d9-af93-21e4a857117e",
+        "id",
+        "91188998-3100-47d9-af93-21e4a857117e",
+        "groupId",
+        "group-18",
+        "data",
+        "{\"id\":\"job-468\",\"enqueuedAt\":1774458326324}",
+        "attempts",
+        "0",
+        "maxAttempts",
+        "3",
+        "seq",
+        "469",
+        "timestamp",
+        "1774458326324",
+        "orderMs",
+        "1774458326324",
+        "score",
+        "70391126324469",
+        "delayUntil",
+        "0"
+      ],
+      "",
+      ""
+    ],
+    [
+      44,
+      1774458325,
+      34695,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-0",
+        "{\"id\":\"job-400\",\"enqueuedAt\":1774458325430}",
+        "3",
+        "1774458325430",
+        "0",
+        "78c31cb9-4294-4d27-b606-01f3a11ad88d",
+        "1",
+        "1774458325430",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      43,
+      1774458325,
+      34449,
+      [
+        "HSET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:job:78c31cb9-4294-4d27-b606-01f3a11ad88d",
+        "status",
+        "waiting"
+      ],
+      "",
+      ""
+    ],
+    [
+      42,
+      1774458324,
+      41295,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-48",
+        "{\"id\":\"job-298\",\"enqueuedAt\":1774458324060}",
+        "3",
+        "1774458324060",
+        "0",
+        "1258b4c8-fbb8-425f-99ee-297e9a8398bb",
+        "1",
+        "1774458324060",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      41,
+      1774458324,
+      40960,
+      [
+        "HMSET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:job:1258b4c8-fbb8-425f-99ee-297e9a8398bb",
+        "id",
+        "1258b4c8-fbb8-425f-99ee-297e9a8398bb",
+        "groupId",
+        "group-48",
+        "data",
+        "{\"id\":\"job-298\",\"enqueuedAt\":1774458324060}",
+        "attempts",
+        "0",
+        "maxAttempts",
+        "3",
+        "seq",
+        "299",
+        "timestamp",
+        "1774458324060",
+        "orderMs",
+        "1774458324060",
+        "score",
+        "70391124060299",
+        "delayUntil",
+        "0"
+      ],
+      "",
+      ""
+    ],
+    [
+      40,
+      1774458323,
+      28743,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-22",
+        "{\"id\":\"job-272\",\"enqueuedAt\":1774458323834}",
+        "3",
+        "1774458323834",
+        "0",
+        "560f0441-99e5-4479-a327-be7ec1870b68",
+        "1",
+        "1774458323834",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      39,
+      1774458323,
+      28299,
+      [
+        "SET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:unique:560f0441-99e5-4479-a327-be7ec1870b68",
+        "560f0441-99e5-4479-a327-be7ec1870b68",
+        "NX"
+      ],
+      "",
+      ""
+    ],
+    [
+      38,
+      1774458323,
+      29830,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-9",
+        "{\"id\":\"job-259\",\"enqueuedAt\":1774458323674}",
+        "3",
+        "1774458323674",
+        "0",
+        "c2234003-3a45-4d11-9885-15010e8a6afe",
+        "1",
+        "1774458323674",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      37,
+      1774458323,
+      29407,
+      [
+        "ZADD",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:g:group-9",
+        "70391123674260",
+        "c2234003-3a45-4d11-9885-15010e8a6afe"
+      ],
+      "",
+      ""
+    ],
+    [
+      36,
+      1774458322,
+      40810,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-0",
+        "{\"id\":\"job-200\",\"enqueuedAt\":1774458322813}",
+        "3",
+        "1774458322813",
+        "0",
+        "e7bd56ae-4261-448c-a034-d0139b7e11e2",
+        "1",
+        "1774458322813",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      35,
+      1774458322,
+      40525,
+      [
+        "INCR",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:seq:20537"
+      ],
+      "",
+      ""
+    ],
+    [
+      34,
+      1774458322,
+      54166,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-49",
+        "{\"id\":\"job-149\",\"enqueuedAt\":1774458322058}",
+        "3",
+        "1774458322058",
+        "0",
+        "b03fdb14-d600-42f1-a447-27239219fdb7",
+        "1",
+        "1774458322058",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      33,
+      1774458322,
+      53923,
+      [
+        "HMSET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:job:b03fdb14-d600-42f1-a447-27239219fdb7",
+        "id",
+        "b03fdb14-d600-42f1-a447-27239219fdb7",
+        "groupId",
+        "group-49",
+        "data",
+        "{\"id\":\"job-149\",\"enqueuedAt\":1774458322058}",
+        "attempts",
+        "0",
+        "maxAttempts",
+        "3",
+        "seq",
+        "150",
+        "timestamp",
+        "1774458322058",
+        "orderMs",
+        "1774458322058",
+        "score",
+        "70391122058150",
+        "delayUntil",
+        "0"
+      ],
+      "",
+      ""
+    ],
+    [
+      32,
+      1774458321,
+      14638,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-14",
+        "{\"id\":\"job-64\",\"enqueuedAt\":1774458321066}",
+        "3",
+        "1774458321066",
+        "0",
+        "78c3c1ad-18d8-49af-8c54-1aa2a5bf3412",
+        "1",
+        "1774458321066",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      31,
+      1774458320,
+      55177,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-17",
+        "{\"id\":\"job-17\",\"enqueuedAt\":1774458320443}",
+        "3",
+        "1774458320443",
+        "0",
+        "bfe5d77a-674d-4ed7-9345-c6837d21776c",
+        "1",
+        "1774458320443",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ],
+    [
+      30,
+      1774458320,
+      54890,
+      [
+        "SET",
+        "groupmq:benchmark-1774458318858-vougqhix1g}:unique:bfe5d77a-674d-4ed7-9345-c6837d21776c",
+        "bfe5d77a-674d-4ed7-9345-c6837d21776c",
+        "NX"
+      ],
+      "",
+      ""
+    ],
+    [
+      29,
+      1774458320,
+      52438,
+      [
+        "evalsha",
+        "1a7e9e4a6738f51cd9b4ae5ac81f6dc82bb38425",
+        "1",
+        "groupmq:benchmark-1774458318858-vougqhix1g}",
+        "group-0",
+        "{\"id\":\"job-0\",\"enqueuedAt\":1774458319988}",
+        "3",
+        "1774458319989",
+        "0",
+        "756beb43-3784-40b5-a4f7-a56b99df7148",
+        "1",
+        "1774458319990",
+        "0"
+      ],
+      "192.168.16.1:52902",
+      ""
+    ]
+  ],
   "latency": [],
   "info": {
-    "used_memory": 6366688,
-    "used_memory_human": "6.07MiB",
-    "used_memory_peak": 8907232,
-    "used_memory_peak_human": "8.49MiB",
-    "total_commands_processed": 168877,
-    "instantaneous_ops_per_sec": 3526,
-    "total_net_input_bytes": 11271294,
-    "total_net_output_bytes": 1926951,
-    "keyspace_hits": 47399,
-    "keyspace_misses": 2872
+    "used_memory": 2147888,
+    "used_memory_human": "2.05M",
+    "used_memory_peak": 2423312,
+    "used_memory_peak_human": "2.31M",
+    "total_commands_processed": 27250,
+    "instantaneous_ops_per_sec": 232,
+    "total_net_input_bytes": 843278,
+    "total_net_output_bytes": 265854,
+    "keyspace_hits": 10518,
+    "keyspace_misses": 2273
   },
   "summary": {
-    "totalCalls": 168865,
-    "totalUsec": 2028436,
-    "avgUsecPerCall": 12.01217540638972,
-    "commandCount": 30,
+    "totalCalls": 27245,
+    "totalUsec": 1320516,
+    "avgUsecPerCall": 48.46819599926592,
+    "commandCount": 31,
     "topCommands": [
       {
-        "command": "hset",
-        "calls": 25000,
-        "usec": 51691,
-        "usec_per_call": 2.06764,
-        "rejected_calls": 0,
-        "failed_calls": 0
-      },
-      {
-        "command": "zadd",
-        "calls": 19371,
-        "usec": 69815,
-        "usec_per_call": 3.6041,
-        "rejected_calls": 0,
-        "failed_calls": 0
-      },
-      {
         "command": "zcard",
-        "calls": 16240,
-        "usec": 5767,
-        "usec_per_call": 0.355111,
+        "calls": 5615,
+        "usec": 7020,
+        "usec_per_call": 1.25,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
-        "command": "del",
-        "calls": 15598,
-        "usec": 43047,
-        "usec_per_call": 2.75978,
-        "rejected_calls": 0,
-        "failed_calls": 0
-      },
-      {
-        "command": "zrange",
-        "calls": 11293,
-        "usec": 46850,
-        "usec_per_call": 4.14859,
+        "command": "hset",
+        "calls": 2503,
+        "usec": 44688,
+        "usec_per_call": 17.85,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
         "command": "evalsha",
-        "calls": 10870,
-        "usec": 1469959,
-        "usec_per_call": 135.231,
+        "calls": 2295,
+        "usec": 807131,
+        "usec_per_call": 351.69,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
-        "command": "zrem",
-        "calls": 6188,
-        "usec": 22278,
-        "usec_per_call": 3.60019,
+        "command": "zadd",
+        "calls": 2198,
+        "usec": 60115,
+        "usec_per_call": 27.35,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
-        "command": "hget",
-        "calls": 5598,
-        "usec": 44615,
-        "usec_per_call": 7.96981,
+        "command": "zrange",
+        "calls": 1619,
+        "usec": 6934,
+        "usec_per_call": 4.28,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
-        "command": "zpopmin",
-        "calls": 5598,
-        "usec": 36325,
-        "usec_per_call": 6.48892,
+        "command": "del",
+        "calls": 1551,
+        "usec": 4795,
+        "usec_per_call": 3.09,
         "rejected_calls": 0,
         "failed_calls": 0
       },
       {
         "command": "set",
-        "calls": 5298,
-        "usec": 32845,
-        "usec_per_call": 6.19951,
+        "calls": 1445,
+        "usec": 96855,
+        "usec_per_call": 67.03,
+        "rejected_calls": 0,
+        "failed_calls": 0
+      },
+      {
+        "command": "get",
+        "calls": 1225,
+        "usec": 30527,
+        "usec_per_call": 24.92,
+        "rejected_calls": 0,
+        "failed_calls": 0
+      },
+      {
+        "command": "hget",
+        "calls": 921,
+        "usec": 5815,
+        "usec_per_call": 6.31,
+        "rejected_calls": 0,
+        "failed_calls": 0
+      },
+      {
+        "command": "zscore",
+        "calls": 869,
+        "usec": 3428,
+        "usec_per_call": 3.94,
         "rejected_calls": 0,
         "failed_calls": 0
       }

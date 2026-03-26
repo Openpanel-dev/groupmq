@@ -18,6 +18,49 @@ end
 -- BullMQ-style: Check if group has active jobs
 local activeCount = redis.call("LLEN", groupActiveKey)
 
+-- Self-healing: detect and clean up ghost active entries left by ungraceful shutdown
+if activeCount > 0 then
+  local firstActive = redis.call("LINDEX", groupActiveKey, 0)
+  if firstActive then
+    local isStale = false
+    local procScore = redis.call("ZSCORE", ns .. ":processing", firstActive)
+    if not procScore then
+      isStale = true
+    else
+      local sStatus = redis.call("HGET", ns .. ":job:" .. firstActive, "status")
+      if not sStatus or (sStatus ~= "processing" and sStatus ~= "completing") then
+        isStale = true
+      else
+        -- Heartbeat freshness: processing score = deadlineAt = lastHeartbeat + vt
+        -- If (deadlineAt - now) < (vt - threshold), heartbeat stopped refreshing
+        local deadline = tonumber(procScore)
+        if deadline then
+          local gap = deadline - now
+          local hbThreshold = math.max(30000, math.min(120000, math.floor(vt / 3)))
+          if gap < (vt - hbThreshold) then
+            isStale = true
+          end
+        end
+      end
+    end
+    if isStale then
+      redis.call("DEL", groupActiveKey)
+      local sJobKey = ns .. ":job:" .. firstActive
+      local sScore = redis.call("HGET", sJobKey, "score")
+      if sScore then
+        redis.call("ZADD", gZ, tonumber(sScore), firstActive)
+        redis.call("HSET", sJobKey, "status", "waiting")
+      end
+      redis.call("ZREM", ns .. ":processing", firstActive)
+      redis.call("DEL", ns .. ":processing:" .. firstActive)
+      activeCount = 0
+    end
+  else
+    redis.call("DEL", groupActiveKey)
+    activeCount = 0
+  end
+end
+
 if activeCount > 0 then
   -- If allowedJobId is provided, check if it matches the active job (grace collection)
   if allowedJobId then
