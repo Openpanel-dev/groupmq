@@ -1,3 +1,11 @@
+## [2.0.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v2.0.0-next.5...v2.0.0-next.6) (2026-05-09)
+
+
+### Bug Fixes
+
+* error on high throughput and low keep complete ([fc8c685](https://github.com/Openpanel-dev/groupmq/commit/fc8c6854d66b90b656b87270d5ec050cbfe17424))
+* stalled events ([e51ef35](https://github.com/Openpanel-dev/groupmq/commit/e51ef35197d4f9426df71550d9c7d8d6c60d5da2))
+
 ## [2.0.0-next.5](https://github.com/Openpanel-dev/groupmq/compare/v2.0.0-next.4...v2.0.0-next.5) (2026-04-24)
 
 
