@@ -153,4 +153,92 @@ describe('Idempotent enqueue with optional jobId', () => {
 
     await redis.quit();
   });
+
+  // Regression: the dedup branch used to return a bare jobId from Lua, after
+  // which JS did a follow-up HGETALL via getJob(). Under high throughput with
+  // small `keepCompleted`, retention could trim the hash between Lua returning
+  // and getJob running, causing add() to throw "Job not found" even though the
+  // original add succeeded. The fix reads the existing job inside the Lua
+  // script so the response is atomic with the dedup check.
+  it('dedup returns the existing job data atomically (grouped path)', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue({
+      redis,
+      namespace: `${namespace}:dedup-atomic-grouped`,
+      keepCompleted: 1,
+    });
+
+    const id = 'dedup-atomic-grouped-id';
+    const job1 = await q.add({ groupId: 'g1', data: { n: 1 }, jobId: id });
+    expect(job1.id).toBe(id);
+    expect(job1.data).toEqual({ n: 1 });
+
+    // Job is still in the group zset (no worker), so this hits the
+    // "exists & in-group" dedup branch — exactly the path that used to
+    // return a bare jobId.
+    const job2 = await q.add({ groupId: 'g1', data: { n: 2 }, jobId: id });
+    expect(job2).toBeDefined();
+    expect(job2.id).toBe(id);
+    // Dedup must return the *existing* job's data, not the second caller's,
+    // proving the response was sourced from Redis inside the script.
+    expect(job2.data).toEqual({ n: 1 });
+
+    await redis.quit();
+  });
+
+  it('dedup returns the existing job data atomically (simple path)', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue({
+      redis,
+      namespace: `${namespace}:dedup-atomic-simple`,
+      keepCompleted: 1,
+    });
+
+    const id = 'dedup-atomic-simple-id';
+    const job1 = await q.add({ data: { n: 1 }, jobId: id });
+    expect(job1.id).toBe(id);
+    expect(job1.data).toEqual({ n: 1 });
+
+    const job2 = await q.add({ data: { n: 2 }, jobId: id });
+    expect(job2).toBeDefined();
+    expect(job2.id).toBe(id);
+    expect(job2.data).toEqual({ n: 1 });
+
+    await redis.quit();
+  });
+
+  // Stronger guarantee: even if retention trims the hash *after* the dedup
+  // script has already returned, add() must not throw. Old code would do a
+  // separate HGETALL here and blow up.
+  it('does not throw if retention trims the hash after dedup returns', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue({
+      redis,
+      namespace: `${namespace}:retention-race`,
+      keepCompleted: 1,
+    });
+
+    const id = 'retention-race-id';
+    await q.add({ groupId: 'g1', data: { n: 1 }, jobId: id });
+
+    // Wrap eval to delete the hash immediately after the dedup script
+    // resolves — the worst-case timing the original bug exploited.
+    const origEval = redis.evalsha.bind(redis);
+    const jobKey = `${namespace}:retention-race:job:${id}`;
+    (redis as any).evalsha = async (...args: any[]) => {
+      const result = await (origEval as any)(...args);
+      // Only trim after a dedup-shaped reply for our id
+      if (Array.isArray(result) && result[0] === id) {
+        await redis.del(jobKey);
+      }
+      return result;
+    };
+
+    await expect(
+      q.add({ groupId: 'g1', data: { n: 2 }, jobId: id }),
+    ).resolves.toBeDefined();
+
+    (redis as any).evalsha = origEval;
+    await redis.quit();
+  });
 });

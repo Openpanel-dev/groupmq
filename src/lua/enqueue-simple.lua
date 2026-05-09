@@ -23,8 +23,15 @@ if not uniqueSet then
     redis.call("DEL", uniqueKey)
     redis.call("SET", uniqueKey, jobId)
   else
-    -- Job exists, return jobId (idempotent)
-    return jobId
+    -- Job exists, return existing job data (idempotent).
+    -- Read inside the script so the response is atomic with the dedup check —
+    -- otherwise retention can trim the hash between this script returning and
+    -- the client doing a follow-up HGETALL, causing a spurious "job not found".
+    local existing = redis.call("HMGET", jobKey,
+      "id", "groupId", "data", "attempts", "maxAttempts", "timestamp", "orderMs", "status")
+    return {existing[1] or jobId, existing[2] or "", existing[3], existing[4] or "0",
+      existing[5] or tostring(maxAttempts), existing[6] or "0",
+      existing[7] or tostring(orderMs), "0", existing[8] or "waiting"}
   end
 end
 

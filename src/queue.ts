@@ -486,7 +486,11 @@ export class Queue<T = any> {
         );
       }
 
-      return this.getJob(result);
+      // Defensive fallback: current Lua scripts always return an array (even on
+      // dedup), but if a stale script ever returns just a jobId, build the Job
+      // synthetically from the input opts rather than re-reading the hash —
+      // retention may have already trimmed it, and re-reading would throw.
+      return this.buildSyntheticDedupJob(result, opts, serializedPayload);
     }
 
     // Grouped job path (with staging support)
@@ -541,9 +545,36 @@ export class Queue<T = any> {
       );
     }
 
-    // Fallback for old format (just jobId string) - this shouldn't happen with updated Lua script
-    // but kept for backwards compatibility during rollout
-    return this.getJob(result);
+    // Defensive fallback: same race avoidance as the simple path above.
+    return this.buildSyntheticDedupJob(result, opts, serializedPayload);
+  }
+
+  private buildSyntheticDedupJob(
+    id: string,
+    opts: {
+      groupId?: string;
+      jobId: string;
+      maxAttempts: number;
+      orderMs: number;
+    },
+    serializedPayload: string,
+  ): JobEntity<T> {
+    return JobEntity.fromRawHash<T>(
+      this,
+      id,
+      {
+        id,
+        groupId: opts.groupId ?? '',
+        data: serializedPayload,
+        attempts: '0',
+        maxAttempts: String(opts.maxAttempts),
+        timestamp: String(Date.now()),
+        orderMs: String(opts.orderMs),
+        delayUntil: '0',
+        status: 'unknown',
+      },
+      'unknown',
+    );
   }
 
   private async flushBatch(): Promise<void> {

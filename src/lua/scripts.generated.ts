@@ -846,8 +846,15 @@ if not uniqueSet then
     redis.call("DEL", uniqueKey)
     redis.call("SET", uniqueKey, jobId)
   else
-    -- Job exists, return jobId (idempotent)
-    return jobId
+    -- Job exists, return existing job data (idempotent).
+    -- Read inside the script so the response is atomic with the dedup check —
+    -- otherwise retention can trim the hash between this script returning and
+    -- the client doing a follow-up HGETALL, causing a spurious "job not found".
+    local existing = redis.call("HMGET", jobKey,
+      "id", "groupId", "data", "attempts", "maxAttempts", "timestamp", "orderMs", "status")
+    return {existing[1] or jobId, existing[2] or "", existing[3], existing[4] or "0",
+      existing[5] or tostring(maxAttempts), existing[6] or "0",
+      existing[7] or tostring(orderMs), "0", existing[8] or "waiting"}
   end
 end
 
@@ -891,6 +898,19 @@ local groupsKey = ns .. ":groups"
 -- Idempotence: ensure unique jobId per queue namespace with stale-key recovery
 local uniqueKey = ns .. ":unique:" .. jobId
 local uniqueSet = redis.call("SET", uniqueKey, jobId, "NX")
+
+-- Helper: read existing job hash and shape it like the success-path return
+-- value. Done inside the Lua script (atomic with the dedup check) to avoid
+-- a race where retention trims the hash between this script returning and
+-- the client doing a follow-up HGETALL.
+local function existingJobReply(fallbackGroupId, fallbackStatus)
+  local existing = redis.call("HMGET", jobKey,
+    "id", "groupId", "data", "attempts", "maxAttempts", "timestamp", "orderMs", "status")
+  return {existing[1] or jobId, existing[2] or fallbackGroupId or groupId, existing[3] or data,
+    existing[4] or "0", existing[5] or tostring(maxAttempts), existing[6] or "0",
+    existing[7] or tostring(orderMs or 0), "0", existing[8] or fallbackStatus or "waiting"}
+end
+
 if not uniqueSet then
   -- Duplicate detected. Check for stale unique mapping
   local exists = redis.call("EXISTS", jobKey)
@@ -914,7 +934,7 @@ if not uniqueSet then
       else
         -- Job hash exists and we're keeping completed jobs, ensure unique key exists
         redis.call("SET", uniqueKey, jobId)
-        return jobId
+        return existingJobReply(gid, "completed")
       end
     else
       if keepCompleted == 0 then
@@ -926,7 +946,7 @@ if not uniqueSet then
         else
           -- Job is still active, ensure unique key exists
           redis.call("SET", uniqueKey, jobId)
-          return jobId
+          return existingJobReply(gid, status)
         end
       end
       local activeAgain = redis.call("ZSCORE", ns .. ":processing", jobId)
@@ -936,7 +956,7 @@ if not uniqueSet then
       end
       local jobStillExists = redis.call("EXISTS", jobKey)
       if jobStillExists == 1 and (activeAgain or inGroupAgain) then
-        return jobId
+        return existingJobReply(gid, activeAgain and "active" or "waiting")
       end
     end
   end
