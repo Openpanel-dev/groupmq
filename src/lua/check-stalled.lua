@@ -35,44 +35,58 @@ for _, jobId in ipairs(candidates) do
   local jobKey = ns .. ":job:" .. jobId
   local h = redis.call("HMGET", jobKey, "groupId","stalledCount","maxAttempts","attempts","status","finishedOn","score")
   local groupId = h[1]
-  if groupId then
+  local status = h[5]
+
+  -- Self-healing: if job hash is gone (no groupId) the processing entry is
+  -- unreachable from any other code path. Just drop it so it stops looking
+  -- like an active job forever.
+  if not groupId then
+    redis.call("ZREM", processingKey, jobId)
+    table.insert(results, jobId); table.insert(results, ""); table.insert(results, "orphaned")
+  -- Self-healing: if status is no longer "processing" some other path
+  -- already handled this job (recovery, completion, manual fix, etc.) but
+  -- failed to clear the processing zset entry. Drop it and remove from the
+  -- group's active list so the group isn't blocked.
+  elseif status ~= "processing" then
+    redis.call("ZREM", processingKey, jobId)
+    local groupActiveKey = ns .. ":g:" .. groupId .. ":active"
+    redis.call("LREM", groupActiveKey, 0, jobId)
+    table.insert(results, jobId); table.insert(results, groupId); table.insert(results, "orphaned")
+  else
     local stalledCount = tonumber(h[2]) or 0
     local maxAttempts = tonumber(h[3]) or 3
-    local status = h[5]
     local finishedOn = tonumber(h[6] or "0")
-    if status == "processing" then
-      stalledCount = stalledCount + 1
-      redis.call("HSET", jobKey, "stalledCount", stalledCount)
-      -- BullMQ-style: Remove from per-group active list
-      local groupActiveKey = ns .. ":g:" .. groupId .. ":active"
-      redis.call("LREM", groupActiveKey, 1, jobId)
-      
-      if stalledCount >= maxStalledCount and maxStalledCount > 0 then
+    stalledCount = stalledCount + 1
+    redis.call("HSET", jobKey, "stalledCount", stalledCount)
+    -- BullMQ-style: Remove from per-group active list
+    local groupActiveKey = ns .. ":g:" .. groupId .. ":active"
+    redis.call("LREM", groupActiveKey, 1, jobId)
+
+    if stalledCount >= maxStalledCount and maxStalledCount > 0 then
+      redis.call("ZREM", processingKey, jobId)
+      local groupKey = ns .. ":g:" .. groupId
+      redis.call("ZREM", groupKey, jobId)
+      redis.call("HSET", jobKey, "status","failed","finishedOn", now,
+                 "failedReason", "Job stalled " .. stalledCount .. " times (max: " .. maxStalledCount .. ")")
+      redis.call("ZADD", ns .. ":failed", now, jobId)
+      table.insert(results, jobId); table.insert(results, groupId); table.insert(results, "failed")
+    else
+      local stillInProcessing = redis.call("ZSCORE", processingKey, jobId)
+      if stillInProcessing then
         redis.call("ZREM", processingKey, jobId)
-        local groupKey = ns .. ":g:" .. groupId
-        redis.call("ZREM", groupKey, jobId)
-        redis.call("HSET", jobKey, "status","failed","finishedOn", now,
-                   "failedReason", "Job stalled " .. stalledCount .. " times (max: " .. maxStalledCount .. ")")
-        redis.call("ZADD", ns .. ":failed", now, jobId)
-        table.insert(results, jobId); table.insert(results, groupId); table.insert(results, "failed")
-      else
-        local stillInProcessing = redis.call("ZSCORE", processingKey, jobId)
-        if stillInProcessing then
-          redis.call("ZREM", processingKey, jobId)
-          local score = tonumber(h[7])
-          if score then
-            local groupKey2 = ns .. ":g:" .. groupId
-            redis.call("ZADD", groupKey2, score, jobId)
-            local head = redis.call("ZRANGE", groupKey2, 0, 0, "WITHSCORES")
-            if head and #head >= 2 then
-              local headScore = tonumber(head[2])
-              redis.call("ZADD", ns .. ":ready", headScore, groupId)
-            end
-            redis.call("SADD", groupsKey, groupId)
+        local score = tonumber(h[7])
+        if score then
+          local groupKey2 = ns .. ":g:" .. groupId
+          redis.call("ZADD", groupKey2, score, jobId)
+          local head = redis.call("ZRANGE", groupKey2, 0, 0, "WITHSCORES")
+          if head and #head >= 2 then
+            local headScore = tonumber(head[2])
+            redis.call("ZADD", ns .. ":ready", headScore, groupId)
           end
-          redis.call("HSET", jobKey, "status", "waiting")
-          table.insert(results, jobId); table.insert(results, groupId); table.insert(results, "recovered")
+          redis.call("SADD", groupsKey, groupId)
         end
+        redis.call("HSET", jobKey, "status", "waiting")
+        table.insert(results, jobId); table.insert(results, groupId); table.insert(results, "recovered")
       end
     end
   end

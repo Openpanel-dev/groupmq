@@ -134,6 +134,62 @@ describe('Stalled Job Detection Tests', () => {
     expect(activeCount).toBe(0);
   });
 
+  it('self-heals zombie processing entries with no job hash', async () => {
+    const ns = `groupmq:${namespace}`;
+    const jobId = 'zombie-no-hash';
+    const expiredDeadline = Date.now() - 60_000;
+
+    // Simulate the leak shape: processing zset has an entry but the job hash
+    // was deleted (e.g. via retention trim or manual cleanup).
+    await redis.zadd(`${ns}:processing`, expiredDeadline, jobId);
+
+    const before = await redis.zscore(`${ns}:processing`, jobId);
+    expect(before).not.toBeNull();
+
+    const results = await queue.checkStalledJobs(Date.now(), 0, 1);
+
+    // The entry should be gone from the processing zset.
+    const after = await redis.zscore(`${ns}:processing`, jobId);
+    expect(after).toBeNull();
+
+    // And reported as orphaned so callers can observe the cleanup.
+    const idx = results.indexOf(jobId);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(results[idx + 2]).toBe('orphaned');
+  });
+
+  it('self-heals processing entries whose status is not "processing"', async () => {
+    const ns = `groupmq:${namespace}`;
+    const jobId = 'zombie-status-mismatch';
+    const groupId = 'g-zombie';
+    const expiredDeadline = Date.now() - 60_000;
+
+    // Job hash exists with a non-"processing" status (e.g. fix-orphaned-active
+    // set it back to "waiting" but failed to clean up the processing entry in
+    // older versions of the script).
+    await redis.hset(`${ns}:job:${jobId}`, {
+      groupId,
+      status: 'waiting',
+      score: '0',
+    });
+    await redis.zadd(`${ns}:processing`, expiredDeadline, jobId);
+    // And it's leaking in the active list too — verify we clear that.
+    await redis.lpush(`${ns}:g:${groupId}:active`, jobId);
+
+    const results = await queue.checkStalledJobs(Date.now(), 0, 1);
+
+    const stillProcessing = await redis.zscore(`${ns}:processing`, jobId);
+    expect(stillProcessing).toBeNull();
+
+    const stillActive = await redis.lrange(`${ns}:g:${groupId}:active`, 0, -1);
+    expect(stillActive).not.toContain(jobId);
+
+    const idx = results.indexOf(jobId);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(results[idx + 1]).toBe(groupId);
+    expect(results[idx + 2]).toBe('orphaned');
+  });
+
   it('should expose queue.checkStalledJobs method for manual checking', async () => {
     // This documents the manual checking API
     const now = Date.now();
