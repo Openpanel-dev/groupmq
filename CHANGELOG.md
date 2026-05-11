@@ -1,3 +1,10 @@
+## [2.0.0-next.7](https://github.com/Openpanel-dev/groupmq/compare/v2.0.0-next.6...v2.0.0-next.7) (2026-05-11)
+
+
+### Bug Fixes
+
+* add reserveBatchSize ([63761b1](https://github.com/Openpanel-dev/groupmq/commit/63761b10b1c0131b4d8059e8597420aebbafcb36))
+
 ## [2.0.0-next.6](https://github.com/Openpanel-dev/groupmq/compare/v2.0.0-next.5...v2.0.0-next.6) (2026-05-09)
 
 
