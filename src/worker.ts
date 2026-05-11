@@ -275,6 +275,29 @@ export type WorkerOptions<T> = {
    * - Strict timing: Keep at 0
    */
   stalledGracePeriod?: number;
+
+  /**
+   * Maximum number of jobs to reserve in a single Redis round trip.
+   *
+   * The reserve script enforces the one-job-per-group invariant server-side
+   * (`LLEN` check in `reserve-batch.lua`), so batching is always safe — a group
+   * with an active job will be skipped regardless of batch size.
+   *
+   * Higher values let a single worker refill many concurrency slots per round
+   * trip, which is the difference between being concurrency-bound and being
+   * Redis-RTT-bound. The trade-off: each batch holds Redis on the Lua script
+   * for the duration of the batch, so very large values can briefly block
+   * other commands.
+   *
+   * @default 32
+   * @example 64 // High-throughput workers with high concurrency
+   * @example 8  // Conservative, minimizes per-call Redis blocking
+   *
+   * **When to adjust:**
+   * - High concurrency (>200) and many groups: Increase (64–128)
+   * - Shared Redis with latency-sensitive tenants: Decrease (8–16)
+   */
+  reserveBatchSize?: number;
 };
 
 const defaultBackoff: BackoffStrategy = (attempt) => {
@@ -300,6 +323,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
   private cleanupTimer?: NodeJS.Timeout;
   private blockingTimeoutSec: number;
   private concurrency: number;
+  private reserveBatchSize: number;
   private blockingClient: import('ioredis').default | null = null;
 
   // Stalled job detection
@@ -352,6 +376,7 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
     this.blockingTimeoutSec = opts.blockingTimeoutSec ?? 5; // 1s default for responsive job pickup (adaptive logic can go lower)
     // With AsyncFifoQueue, we can safely use atomic completion for all concurrency levels
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
+    this.reserveBatchSize = Math.max(1, opts.reserveBatchSize ?? 32);
 
     // Initialize stalled job detection settings
     // BullMQ-inspired: More conservative settings for high concurrency
@@ -533,14 +558,17 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
             continue; // Skip grouped reserve
           }
 
-          // Try batch reserve for grouped jobs
-          // Use batch reserve even for concurrency=1 since it's more efficient than blocking+atomic
-          // But limit batch size to available concurrency capacity
-          // Only batch reserve when queue is empty (process existing jobs first)
+          // Batch reserve to refill capacity. The one-job-per-group invariant
+          // is enforced server-side by the LLEN check in reserve-batch.lua, so
+          // batching is safe at any size — groups with an active job are
+          // skipped regardless of how many jobs we ask for.
           const availableCapacity =
             this.concurrency - asyncFifoQueue.numTotal();
-          if (availableCapacity > 0 && asyncFifoQueue.numTotal() === 0) {
-            const batchSize = Math.min(availableCapacity, 8); // Cap at 8 for efficiency
+          if (availableCapacity > 0) {
+            const batchSize = Math.min(
+              availableCapacity,
+              this.reserveBatchSize,
+            );
             const batchJobs = await this.q.reserveBatch(batchSize);
 
             if (batchJobs.length > 0) {
@@ -548,48 +576,38 @@ class _Worker<T = any> extends TypedEventEmitter<WorkerEvents<T>> {
               for (const job of batchJobs) {
                 asyncFifoQueue.add(Promise.resolve(job));
               }
-              // Reset counters for successful batch
               connectionRetries = 0;
               this.lastJobPickupTime = Date.now();
               this.blockingStats.consecutiveEmptyReserves = 0;
               this.blockingStats.lastActivityTime = Date.now();
               this.emptyReserveBackoffMs = 0;
-              continue; // Skip individual reserve
+              continue;
             }
           }
 
-          // BullMQ-style: only perform blocking reserve when truly drained
-          // Require 2 consecutive empty reserves before considering queue drained
-          // This prevents false positives from worker competition while staying responsive
-          // Check both queued/pending jobs AND actively processing jobs
+          // Batch came back empty. Decide between a blocking wait (truly idle)
+          // and falling through to the backoff/break logic below.
           const allowBlocking =
             this.blockingStats.consecutiveEmptyReserves >= 2 &&
             asyncFifoQueue.numTotal() === 0 &&
             this.jobsInProgress.size === 0;
 
-          // Use a consistent blocking timeout - BullMQ style
-          // Job completion resets consecutiveEmptyReserves to 0, ensuring fast pickup
-          const adaptiveTimeout = this.blockingTimeoutSec;
-
-          const fetchedJob = allowBlocking
-            ? this.q.reserveBlocking(
-                adaptiveTimeout,
-                this.blockingClient ?? undefined,
-              )
-            : this.q.reserve();
-
-          asyncFifoQueue.add(fetchedJob);
-
-          // Sequential fetching: wait for this fetch before next (prevents thundering herd)
-          const job = await fetchedJob;
+          let job: ReservedJob<T> | void | null = null;
+          if (allowBlocking) {
+            const fetchedJob = this.q.reserveBlocking(
+              this.blockingTimeoutSec,
+              this.blockingClient ?? undefined,
+            );
+            asyncFifoQueue.add(fetchedJob);
+            job = await fetchedJob;
+          }
 
           if (job) {
-            // Reset connection retry count and empty reserves
             connectionRetries = 0;
             this.lastJobPickupTime = Date.now();
             this.blockingStats.consecutiveEmptyReserves = 0;
             this.blockingStats.lastActivityTime = Date.now();
-            this.emptyReserveBackoffMs = 0; // Reset backoff when we get a job
+            this.emptyReserveBackoffMs = 0;
 
             this.logger.debug(
               `Fetched job ${job.id} from group ${job.groupId}`,
