@@ -114,6 +114,25 @@ describe('Redis Disconnect/Reconnect Tests', () => {
     await redis.quit();
   });
 
+  it('should reload cached Lua scripts after Redis SCRIPT FLUSH', async () => {
+    const redis = new Redis(REDIS_URL);
+    const q = new Queue({ redis, namespace: `${namespace}:script-flush` });
+
+    await q.add({ groupId: 'script-flush-group', data: { phase: 'before' } });
+
+    // Redis does not persist its Lua script cache across restarts/failovers.
+    // SCRIPT FLUSH reproduces the NOSCRIPT condition without restarting Redis.
+    await (redis as any).script('flush');
+
+    await expect(
+      q.add({ groupId: 'script-flush-group', data: { phase: 'after' } }),
+    ).resolves.toBeDefined();
+
+    expect(await q.getWaitingCount()).toBe(2);
+
+    await redis.quit();
+  });
+
   it('should handle network partitions and blocking operations', async () => {
     const redis = new Redis(REDIS_URL, {
       connectTimeout: 1000,
